@@ -5,14 +5,14 @@ on:
     pull_request:
         branches: ["dev"]
         paths:
-            - "command_documents/**/*.json"
+            - "command_documents/healthcheck/*.json"
             - ".github/workflows/**"
 
     # PR2がマージされて main に反映されたら prod 実行
     push:
         branches: ["main"]
         paths:
-            - "command_documents/**/*.json"
+            - "command_documents/healthcheck/*.json"
             - ".github/workflows/**"
     workflow_dispatch:
 
