@@ -1,18 +1,18 @@
-name: ssm-command-doc-cicd
+name: ssm-deploy
 
 on:
     # PR1: feature/* -> dev
     pull_request:
         branches: ["dev"]
         paths:
-            - "ssm-documents/**/*.json"
+            - "command_documents/**/*.json"
             - ".github/workflows/**"
 
     # PR2がマージされて main に反映されたら prod 実行
     push:
         branches: ["main"]
         paths:
-            - "ssm-documents/**/*.json"
+            - "command_documents/**/*.json"
             - ".github/workflows/**"
     workflow_dispatch:
 
@@ -22,7 +22,7 @@ permissions:
 
 env:
     AWS_REGION: ap-northeast-1
-    DOC_DIR: ssm-documents
+    DOC_DIR: command_documents
 
 jobs:
     validate:
