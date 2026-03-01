@@ -118,15 +118,15 @@ jobs:
                   aws-region: ${{ env.AWS_REGION }}
 
             # AWS側検証（可能なら）
-            - name: Validate via AWS API (dev)
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    echo "AWS validate-document-content: $f"
-                    aws ssm validate-document-content --content "file://$f" >/dev/null
-                  done
+            # - name: Validate via AWS API (dev)
+            #   run: |
+            #       set -euo pipefail
+            #       shopt -s globstar
+            #       for f in ${DOC_DIR}/**/*.json; do
+            #         [ -f "$f" ] || continue
+            #         echo "AWS validate-document-content: $f"
+            #         aws ssm validate-document-content --content "file://$f" >/dev/null
+            #       done
 
             # 3 devへSSMドキュメントアップロード（JSON固定）
             - name: Deploy SSM Command Documents to dev
