@@ -129,56 +129,31 @@ jobs:
             #       done
 
             # 3 devへSSMドキュメントアップロード（JSON固定）
-            - name: Deploy SSM Command Documents to dev (create or update)
+            - name: Deploy SSM Command Documents to dev
               run: |
                   set -euo pipefail
                   shopt -s globstar
-
                   for f in ${DOC_DIR}/**/*.json; do
-                  [ -f "$f" ] || continue
+                    [ -f "$f" ] || continue
+                    base="$(basename "$f")"
+                    name="${base%.*}"
+                    echo "Deploying document: $name from $f"
 
-                  base="$(basename "$f")"
-                  name="${base%.*}"
-
-                  echo "=== Deploying: ${name} (${f}) ==="
-
-                  if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-                      # 既存あり：更新してよいドキュメントか確認
-                      DOC_TYPE=$(aws ssm describe-document --name "$name" --query 'Document.DocumentType' --output text)
-                      OWNER=$(aws ssm describe-document --name "$name" --query 'Document.Owner' --output text)
-
-                      if [ "$DOC_TYPE" != "Command" ]; then
-                      echo "ERROR: Document '${name}' exists but DocumentType is '${DOC_TYPE}' (expected Command)."
-                      exit 1
-                      fi
-
-                      # OwnerがアカウントIDでない場合（AWS提供/共有）は更新不可になりがちなので弾く
-                      # ※ 自アカウントIDは sts で取得
-                      ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-                      if [ "$OWNER" != "$ACCOUNT_ID" ]; then
-                      echo "ERROR: Document '${name}' is not owned by this account (Owner: ${OWNER}). Cannot update safely."
-                      exit 1
-                      fi
-
-                      echo "Updating existing Command document: ${name}"
+                    if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
                       aws ssm update-document \
-                      --name "$name" \
-                      --content "file://$f" \
-                      --document-format JSON
-
-                      # デフォルトバージョンを最新にする（重要）
+                        --name "$name" \
+                        --content "file://$f" \
+                        --document-format JSON
                       aws ssm update-document-default-version \
-                      --name "$name" \
-                      --document-version '$LATEST'
-
-                  else
-                      echo "Creating new Command document: ${name}"
+                        --name "$name" \
+                        --document-version '$LATEST'
+                    else
                       aws ssm create-document \
-                      --name "$name" \
-                      --content "file://$f" \
-                      --document-type "Command" \
-                      --document-format JSON
-                  fi
+                        --name "$name" \
+                        --content "file://$f" \
+                        --document-type "Command" \
+                        --document-format JSON
+                    fi
                   done
 
             # 4 devへSSM実行
