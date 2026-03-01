@@ -146,9 +146,14 @@ jobs:
                         --document-format JSON \
                         --document-version '$LATEST'
 
+                      LATEST_VER=$(aws ssm describe-document \
+                        --name "$name" \
+                        --query 'Document.LatestVersion' \
+                        --output text)
+
                       aws ssm update-document-default-version \
                         --name "$name" \
-                        --document-version '$LATEST'
+                        --document-version "$LATEST_VER"
                     else
                       aws ssm create-document \
                         --name "$name" \
