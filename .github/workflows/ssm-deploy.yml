@@ -143,7 +143,9 @@ jobs:
                       aws ssm update-document \
                         --name "$name" \
                         --content "file://$f" \
-                        --document-format JSON
+                        --document-format JSON \
+                        --document-version '$LATEST'
+
                       aws ssm update-document-default-version \
                         --name "$name" \
                         --document-version '$LATEST'
