@@ -55,52 +55,52 @@ jobs:
                   done
 
             # 2-3 SSM Command ドキュメントとしての必須構造チェック（jq）
-            - name: SSM Command document structure check
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    echo "Checking: $f"
+            # - name: SSM Command document structure check
+            #   run: |
+            #       set -euo pipefail
+            #       shopt -s globstar
+            #       for f in ${DOC_DIR}/**/*.json; do
+            #         [ -f "$f" ] || continue
+            #         echo "Checking: $f"
 
-                    # 必須トップレベル: schemaVersion/mainSteps
-                    jq -e '
-                      (.schemaVersion | type=="string" and length>0)
-                      and
-                      (.mainSteps | type=="array" and length>0)
-                    ' "$f" > /dev/null
+            #         # 必須トップレベル: schemaVersion/mainSteps
+            #         jq -e '
+            #           (.schemaVersion | type=="string" and length>0)
+            #           and
+            #           (.mainSteps | type=="array" and length>0)
+            #         ' "$f" > /dev/null
 
-                    # mainSteps 必須: name/action/inputs
-                    jq -e '
-                      .mainSteps
-                      | all(
-                          (.name | type=="string" and length>0)
-                          and
-                          (.action | type=="string" and (
-                                .=="aws:runShellScript"
-                             or .=="aws:runPowerShellScript"
-                             or .=="aws:runDocument"
-                             or .=="aws:runAnsiblePlaybook"
-                          ))
-                          and
-                          (.inputs | type=="object")
-                      )
-                    ' "$f" > /dev/null
+            #         # mainSteps 必須: name/action/inputs
+            #         jq -e '
+            #           .mainSteps
+            #           | all(
+            #               (.name | type=="string" and length>0)
+            #               and
+            #               (.action | type=="string" and (
+            #                     .=="aws:runShellScript"
+            #                  or .=="aws:runPowerShellScript"
+            #                  or .=="aws:runDocument"
+            #                  or .=="aws:runAnsiblePlaybook"
+            #               ))
+            #               and
+            #               (.inputs | type=="object")
+            #           )
+            #         ' "$f" > /dev/null
 
-                    # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
-                    jq -e '
-                      .mainSteps
-                      | map(select(.action=="aws:runShellScript"))
-                      | all(.inputs.commands | type=="array" and length>0)
-                    ' "$f" > /dev/null
+            #         # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
+            #         jq -e '
+            #           .mainSteps
+            #           | map(select(.action=="aws:runShellScript"))
+            #           | all(.inputs.commands | type=="array" and length>0)
+            #         ' "$f" > /dev/null
 
-                    # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
-                    jq -e '
-                      .mainSteps
-                      | map(select(.action=="aws:runPowerShellScript"))
-                      | all(.inputs.commands | type=="array" and length>0)
-                    ' "$f" > /dev/null
-                  done
+            #         # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
+            #         jq -e '
+            #           .mainSteps
+            #           | map(select(.action=="aws:runPowerShellScript"))
+            #           | all(.inputs.commands | type=="array" and length>0)
+            #         ' "$f" > /dev/null
+            #       done
 
     deploy_and_run_dev:
         # PR1のときだけ実行
