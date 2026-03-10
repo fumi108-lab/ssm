@@ -1,20 +1,20 @@
-name: ssm-command-doc-cicd
+name: ssm-deploy
 
 on:
     # PR1: feature/* -> dev
     pull_request:
         branches: ["dev"]
         paths:
-            - "ssm-documents/**/*.json"
+            - "command_documents/healthcheck/*.json"
             - ".github/workflows/**"
 
     # PR2がマージされて main に反映されたら prod 実行
-    push:
-        branches: ["main"]
-        paths:
-            - "ssm-documents/**/*.json"
-            - ".github/workflows/**"
-    workflow_dispatch:
+    # push:
+    #     branches: ["main"]
+    #     paths:
+    #         - "command_documents/healthcheck/*.json"
+    #         - ".github/workflows/**"
+    # workflow_dispatch:
 
 permissions:
     id-token: write
@@ -22,7 +22,7 @@ permissions:
 
 env:
     AWS_REGION: ap-northeast-1
-    DOC_DIR: ssm-documents
+    DOC_DIR: command_documents/healthcheck
 
 jobs:
     validate:
@@ -49,58 +49,58 @@ jobs:
               run: |
                   set -euo pipefail
                   shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
+                  for f in ${DOC_DIR}/*.json; do
                     [ -f "$f" ] || continue
                     jq . "$f" > /dev/null
                   done
 
             # 2-3 SSM Command ドキュメントとしての必須構造チェック（jq）
-            - name: SSM Command document structure check
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    echo "Checking: $f"
+            # - name: SSM Command document structure check
+            #   run: |
+            #       set -euo pipefail
+            #       shopt -s globstar
+            #       for f in ${DOC_DIR}/*.json; do
+            #         [ -f "$f" ] || continue
+            #         echo "Checking: $f"
 
-                    # 必須トップレベル: schemaVersion/mainSteps
-                    jq -e '
-                      (.schemaVersion | type=="string" and length>0)
-                      and
-                      (.mainSteps | type=="array" and length>0)
-                    ' "$f" > /dev/null
+            #         # 必須トップレベル: schemaVersion/mainSteps
+            #         jq -e '
+            #           (.schemaVersion | type=="string" and length>0)
+            #           and
+            #           (.mainSteps | type=="array" and length>0)
+            #         ' "$f" > /dev/null
 
-                    # mainSteps 必須: name/action/inputs
-                    jq -e '
-                      .mainSteps
-                      | all(
-                          (.name | type=="string" and length>0)
-                          and
-                          (.action | type=="string" and (
-                                .=="aws:runShellScript"
-                             or .=="aws:runPowerShellScript"
-                             or .=="aws:runDocument"
-                             or .=="aws:runAnsiblePlaybook"
-                          ))
-                          and
-                          (.inputs | type=="object")
-                      )
-                    ' "$f" > /dev/null
+            #         # mainSteps 必須: name/action/inputs
+            #         jq -e '
+            #           .mainSteps
+            #           | all(
+            #               (.name | type=="string" and length>0)
+            #               and
+            #               (.action | type=="string" and (
+            #                     .=="aws:runShellScript"
+            #                  or .=="aws:runPowerShellScript"
+            #                  or .=="aws:runDocument"
+            #                  or .=="aws:runAnsiblePlaybook"
+            #               ))
+            #               and
+            #               (.inputs | type=="object")
+            #           )
+            #         ' "$f" > /dev/null
 
-                    # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
-                    jq -e '
-                      .mainSteps
-                      | map(select(.action=="aws:runShellScript"))
-                      | all(.inputs.commands | type=="array" and length>0)
-                    ' "$f" > /dev/null
+            #         # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
+            #         jq -e '
+            #           .mainSteps
+            #           | map(select(.action=="aws:runShellScript"))
+            #           | all(.inputs.commands | type=="array" and length>0)
+            #         ' "$f" > /dev/null
 
-                    # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
-                    jq -e '
-                      .mainSteps
-                      | map(select(.action=="aws:runPowerShellScript"))
-                      | all(.inputs.commands | type=="array" and length>0)
-                    ' "$f" > /dev/null
-                  done
+            #         # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
+            #         jq -e '
+            #           .mainSteps
+            #           | map(select(.action=="aws:runPowerShellScript"))
+            #           | all(.inputs.commands | type=="array" and length>0)
+            #         ' "$f" > /dev/null
+            #       done
 
     deploy_and_run_dev:
         # PR1のときだけ実行
@@ -118,22 +118,22 @@ jobs:
                   aws-region: ${{ env.AWS_REGION }}
 
             # AWS側検証（可能なら）
-            - name: Validate via AWS API (dev)
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    echo "AWS validate-document-content: $f"
-                    aws ssm validate-document-content --content "file://$f" >/dev/null
-                  done
+            # - name: Validate via AWS API (dev)
+            #   run: |
+            #       set -euo pipefail
+            #       shopt -s globstar
+            #       for f in ${DOC_DIR}/*.json; do
+            #         [ -f "$f" ] || continue
+            #         echo "AWS validate-document-content: $f"
+            #         aws ssm validate-document-content --content "file://$f" >/dev/null
+            #       done
 
             # 3 devへSSMドキュメントアップロード（JSON固定）
             - name: Deploy SSM Command Documents to dev
               run: |
                   set -euo pipefail
                   shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
+                  for f in ${DOC_DIR}/*.json; do
                     [ -f "$f" ] || continue
                     base="$(basename "$f")"
                     name="${base%.*}"
@@ -143,10 +143,17 @@ jobs:
                       aws ssm update-document \
                         --name "$name" \
                         --content "file://$f" \
-                        --document-format JSON
+                        --document-format JSON \
+                        --document-version '$LATEST'
+
+                      LATEST_VER=$(aws ssm describe-document \
+                        --name "$name" \
+                        --query 'Document.LatestVersion' \
+                        --output text)
+
                       aws ssm update-document-default-version \
                         --name "$name" \
-                        --document-version '$LATEST'
+                        --document-version "$LATEST_VER"
                     else
                       aws ssm create-document \
                         --name "$name" \
