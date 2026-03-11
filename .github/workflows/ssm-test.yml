@@ -1,0 +1,26 @@
+name: SSM TEST
+run-name: TEST
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipeName:
+        description: "Recipe Name"
+        required: true
+        default: "ssm-test"
+      targetInstanceId:
+        description: "Target Instance ID"
+        required: true
+      recipeArgs:
+        description: "Recipe Arguments (comma-separated key=value pairs)"
+
+jobs:
+  run-ssm-recipe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run SSM Recipe
+        uses: aws-actions/amazon-ssm-run-command@v1
+        with:
+          recipe-name: ${{ github.event.inputs.recipeName }}
+          target-instance-ids: ${{ github.event.inputs.targetInstanceId }}
+          recipe-arguments: ${{ github.event.inputs.recipeArgs }}

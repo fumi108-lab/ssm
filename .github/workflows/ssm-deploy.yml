@@ -117,18 +117,8 @@ jobs:
                   role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
                   aws-region: ${{ env.AWS_REGION }}
 
-            # AWS側検証（可能なら）
-            # - name: Validate via AWS API (dev)
-            #   run: |
-            #       set -euo pipefail
-            #       shopt -s globstar
-            #       for f in ${DOC_DIR}/*.json; do
-            #         [ -f "$f" ] || continue
-            #         echo "AWS validate-document-content: $f"
-            #         aws ssm validate-document-content --content "file://$f" >/dev/null
-            #       done
-
             # 3 devへSSMドキュメントアップロード（JSON固定）
+            # すでに存在する場合はUpdate, デフォルトバージョンの変更 / 存在しない場合は新規
             - name: Deploy SSM Command Documents to dev
               run: |
                   set -euo pipefail
@@ -154,7 +144,7 @@ jobs:
                       aws ssm update-document-default-version \
                         --name "$name" \
                         --document-version "$LATEST_VER"
-                    else
+                    else  
                       aws ssm create-document \
                         --name "$name" \
                         --content "file://$f" \
