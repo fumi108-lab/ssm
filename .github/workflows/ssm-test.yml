@@ -44,13 +44,13 @@ jobs:
             parameters="$(printf '%s' "${RECIPE_ARGS}" | jq -Rc '
               split(",")
               | map(select(length > 0))
-              | map(split("="; 2))
               | map(
-                  if length == 2 and .[0] != "" and .[1] != "" then
-                    {key: .[0], value: [.[1]]}
-                  else
-                    error("recipeArgs must be comma-separated key=value pairs")
-                  end
+                  capture("^(?<key>[^=]+)=(?<value>.*)$")
+                  | if .key != "" then
+                      {key: .key, value: [.value]}
+                    else
+                      error("recipeArgs must be comma-separated key=value pairs")
+                    end
                 )
               | from_entries
             ')"
