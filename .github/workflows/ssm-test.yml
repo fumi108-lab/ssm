@@ -12,7 +12,7 @@ on:
         description: "Target Instance ID"
         required: true
       recipeArgs:
-        description: "Recipe Arguments (comma-separated key=value pairs)"
+        description: "arg value"
 
 permissions:
   id-token: write
@@ -68,107 +68,38 @@ jobs:
           echo "Target instance: ${TARGET_INSTANCE_ID}"
           echo "Raw recipe args: ${RECIPE_ARGS:-<empty>}"
 
+          if [ -z "${RECIPE_ARGS}" ]; then
+            echo "recipeArgs is required. Pass the value for arg." >&2
+            exit 1
+          fi
+
+          parameters="$(
+            jq -nc \
+              --arg value "${RECIPE_ARGS}" \
+              '{arg: [$value]}'
+          )"
+
+          echo "Resolved parameters: ${parameters}"
+
           echo "Caller identity:"
           run_aws_capture caller_identity aws sts get-caller-identity
           printf '%s\n' "${caller_identity}"
           echo "Document check:"
           run_aws_capture document_summary aws ssm describe-document --name "${RECIPE_NAME}" --query 'Document.{Name:Name,Status:Status,DocumentVersion:DocumentVersion}' --output json
           printf '%s\n' "${document_summary}"
-          run_aws_capture document_content aws ssm get-document --name "${RECIPE_NAME}" --document-version '$LATEST' --query 'Content' --output text
           echo "Managed instance check:"
           run_aws_capture instance_info aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${TARGET_INSTANCE_ID}" --output json
           printf '%s\n' "${instance_info}"
-
-          parameter_count="$(
-            printf '%s' "${document_content}" | jq -r '
-              (.parameters // {})
-              | length
-            '
-          )"
-
-          single_parameter_name="$(
-            printf '%s' "${document_content}" | jq -r '
-              (.parameters // {})
-              | keys
-              | if length == 1 then .[0] else "" end
-            '
-          )"
-
-          required_parameters="$(
-            printf '%s' "${document_content}" | jq -r '
-              (.parameters // {})
-              | to_entries
-              | map(select((.value.default // .value.defaultValue // "") == ""))
-              | map(.key)
-              | join(",")
-            '
-          )"
-
-          if [ -n "${RECIPE_ARGS}" ]; then
-            if [[ "${RECIPE_ARGS}" == *"="* ]]; then
-              parameters="$(printf '%s' "${RECIPE_ARGS}" | jq -Rc '
-                split(",")
-                | map(select(length > 0))
-                | map(
-                    capture("^(?<key>[^=]+)=(?<value>.*)$")
-                    | if .key != "" then
-                        {key: .key, value: [.value]}
-                      else
-                        error("recipeArgs must be comma-separated key=value pairs")
-                      end
-                  )
-                | from_entries
-              ')"
-            elif [ "${parameter_count}" = "1" ] && [ -n "${single_parameter_name}" ]; then
-              parameters="$(
-                jq -nc \
-                  --arg key "${single_parameter_name}" \
-                  --arg value "${RECIPE_ARGS}" \
-                  '{($key): [$value]}'
-              )"
-            else
-              echo "recipeArgs must be key=value pairs for documents with multiple parameters" >&2
-              exit 1
-            fi
-          fi
-
-          echo "Resolved parameters: ${parameters:-<empty>}"
-
-          if [ -n "${required_parameters}" ] && [ -z "${parameters}" ]; then
-            echo "Missing required recipeArgs. Document \`${RECIPE_NAME}\` requires: ${required_parameters}" >&2
-            exit 1
-          fi
-
-          if [ -n "${required_parameters}" ] && [ -n "${parameters}" ]; then
-            missing_parameters="$(
-              jq -nr \
-                --argjson params "${parameters}" \
-                --arg required "${required_parameters}" '
-                  ($required | split(",") | map(select(length > 0))) as $required_keys
-                  | $required_keys
-                  | map(select($params[.] == null))
-                  | join(",")
-                '
-            )"
-
-            if [ -n "${missing_parameters}" ]; then
-              echo "Missing required recipeArgs keys: ${missing_parameters}" >&2
-              exit 1
-            fi
-          fi
 
           send_command_args=(
             aws ssm send-command
             --document-name "${RECIPE_NAME}"
             --instance-ids "${TARGET_INSTANCE_ID}"
             --comment "Triggered by GitHub Actions run ${{ github.run_id }}"
+            --parameters "${parameters}"
             --query Command.CommandId
             --output text
           )
-
-          if [ -n "${parameters}" ]; then
-            send_command_args+=(--parameters "${parameters}")
-          fi
 
           run_aws_capture command_id "${send_command_args[@]}"
 
