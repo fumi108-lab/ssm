@@ -114,20 +114,23 @@ jobs:
           mkdir -p plan
           : > plan/plan.tsv
 
-          {
-            echo "# SSM Deploy Plan"
-            echo ""
-            echo "| Action | Document | File |"
-            echo "| --- | --- | --- |"
-          } > plan/summary.md
-
           actionable_count=0
+          create_count=0
+          update_count=0
+          skip_count=0
+          missing_count=0
+
+          : > plan/create_list.md
+          : > plan/update_list.md
+          : > plan/skip_list.md
+          : > plan/missing_list.md
 
           while IFS= read -r f; do
             [ -n "$f" ] || continue
 
             if [ ! -f "$f" ]; then
-              echo "| skipped-missing | - | \`$f\` |" >> plan/summary.md
+              missing_count=$((missing_count + 1))
+              echo "- \`$f\`" >> plan/missing_list.md
               continue
             fi
 
@@ -148,19 +151,80 @@ jobs:
               action="create"
             fi
 
-            if [ "$action" = "create" ] || [ "$action" = "update" ]; then
-              actionable_count=$((actionable_count + 1))
-            fi
-
             printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
-            echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
+
+            case "$action" in
+              create)
+                actionable_count=$((actionable_count + 1))
+                create_count=$((create_count + 1))
+                echo "- \`$name\` : \`$f\`" >> plan/create_list.md
+                ;;
+              update)
+                actionable_count=$((actionable_count + 1))
+                update_count=$((update_count + 1))
+                echo "- \`$name\` : \`$f\`" >> plan/update_list.md
+                ;;
+              skip)
+                skip_count=$((skip_count + 1))
+                echo "- \`$name\` : \`$f\`" >> plan/skip_list.md
+                ;;
+            esac
           done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
 
           {
+            echo "# SSM Deploy Plan"
             echo ""
-            echo "Actionable documents: \`$actionable_count\`"
+            echo "## Review Result"
             echo ""
-            echo "Review this plan artifact before approving the deployment environment."
+            echo "- Actionable documents: \`$actionable_count\`"
+            echo "- Create: \`$create_count\`"
+            echo "- Update: \`$update_count\`"
+            echo "- Skip: \`$skip_count\`"
+            echo "- Missing in workspace: \`$missing_count\`"
+            echo ""
+            if [ "$actionable_count" -eq 0 ]; then
+              echo "No deployment is required."
+            else
+              echo "Approve the \`dev-ssm-review\` environment after reviewing the actionable documents below."
+            fi
+            echo ""
+            echo "## Create"
+            echo ""
+            if [ -s plan/create_list.md ]; then
+              cat plan/create_list.md
+            else
+              echo "- None"
+            fi
+            echo ""
+            echo "## Update"
+            echo ""
+            if [ -s plan/update_list.md ]; then
+              cat plan/update_list.md
+            else
+              echo "- None"
+            fi
+            echo ""
+            echo "## Skip"
+            echo ""
+            if [ -s plan/skip_list.md ]; then
+              cat plan/skip_list.md
+            else
+              echo "- None"
+            fi
+            echo ""
+            echo "## Missing"
+            echo ""
+            if [ -s plan/missing_list.md ]; then
+              cat plan/missing_list.md
+            else
+              echo "- None"
+            fi
+            echo ""
+            echo "## Full Plan"
+            echo ""
+            echo "| Action | Document | File |"
+            echo "| --- | --- | --- |"
+            awk -F '\t' '{printf("| %s | `%s` | `%s` |\n", $1, $2, $3)}' plan/plan.tsv
           } >> plan/summary.md
 
           cat plan/summary.md >> "$GITHUB_STEP_SUMMARY"
