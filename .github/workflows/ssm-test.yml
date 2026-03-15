@@ -1,4 +1,4 @@
-name: SSM TEST
+name: ssm-test
 run-name: "[${{ github.workflow }} #${{ github.run_number }}][${{ github.event.inputs.recipeName }}] - ${{ github.event.inputs.targetInstanceId }}"
 
 on:
@@ -7,20 +7,159 @@ on:
       recipeName:
         description: "Recipe Name"
         required: true
-        default: "ssm-test"
+        default: "sshd.sh"
       targetInstanceId:
         description: "Target Instance ID"
         required: true
       recipeArgs:
-        description: "Recipe Arguments (comma-separated key=value pairs)"
+        description: "arg value"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
 
 jobs:
   run-ssm-recipe:
     runs-on: ubuntu-latest
     steps:
-      - name: Run SSM Recipe
-        uses: aws-actions/amazon-ssm-run-command@v1
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          recipe-name: ${{ github.event.inputs.recipeName }}
-          target-instance-ids: ${{ github.event.inputs.targetInstanceId }}
-          recipe-arguments: ${{ github.event.inputs.recipeArgs }}
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run SSM Recipe
+        env:
+          RECIPE_NAME: ${{ github.event.inputs.recipeName }}
+          TARGET_INSTANCE_ID: ${{ github.event.inputs.targetInstanceId }}
+          RECIPE_ARGS: ${{ github.event.inputs.recipeArgs }}
+        run: |
+          set -euo pipefail
+
+          # AWS CLI を実行し、出力を保持しつつ失敗時はその場で終了する
+          run_aws_capture() {
+            local __resultvar="$1"
+            shift
+
+            local output
+            local exit_code
+
+            set +e
+            output="$("$@" 2>&1)"
+            exit_code=$?
+            set -e
+
+            if [ "$exit_code" -ne 0 ]; then
+              printf '%s\n' "$output" >&2
+              echo "AWS command failed (${exit_code}): $*" >&2
+              exit "$exit_code"
+            fi
+
+            printf -v "$__resultvar" '%s' "$output"
+          }
+
+          parameters=""
+
+          # Workflow のログ上で実行条件を追えるよう、最初に入力値を出力する
+          echo "AWS CLI version:"
+          aws --version
+          echo "Recipe name: ${RECIPE_NAME}"
+          echo "Target instance: ${TARGET_INSTANCE_ID}"
+          echo "Raw recipe args: ${RECIPE_ARGS:-<empty>}"
+
+          if [ -z "${RECIPE_ARGS}" ]; then
+            echo "recipeArgs is required. Pass the value for arg." >&2
+            exit 1
+          fi
+
+          # この workflow では SSM ドキュメントの引数を arg 1 つに固定して扱う
+          parameters="$(
+            jq -nc \
+              --arg value "${RECIPE_ARGS}" \
+              '{arg: [$value]}'
+          )"
+
+          echo "Resolved parameters: ${parameters}"
+
+          # 実行前に認証先、ドキュメントの存在、対象インスタンスの到達性を確認する
+          echo "Caller identity:"
+          run_aws_capture caller_identity aws sts get-caller-identity
+          printf '%s\n' "${caller_identity}"
+          echo "Document check:"
+          run_aws_capture document_summary aws ssm describe-document --name "${RECIPE_NAME}" --query 'Document.{Name:Name,Status:Status,DocumentVersion:DocumentVersion}' --output json
+          printf '%s\n' "${document_summary}"
+          echo "Managed instance check:"
+          run_aws_capture instance_info aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${TARGET_INSTANCE_ID}" --output json
+          printf '%s\n' "${instance_info}"
+
+          # クォート崩れを避けるため、send-command の引数は配列で組み立てる
+          send_command_args=(
+            aws ssm send-command
+            --document-name "${RECIPE_NAME}"
+            --instance-ids "${TARGET_INSTANCE_ID}"
+            --comment "Triggered by GitHub Actions run ${{ github.run_id }}"
+            --parameters "${parameters}"
+            --query Command.CommandId
+            --output text
+          )
+
+          run_aws_capture command_id "${send_command_args[@]}"
+
+          echo "command_id=${command_id}" >> "${GITHUB_OUTPUT}"
+          echo "Sent command: ${command_id}"
+
+          # 実行完了を待ってから、最終ステータスと標準出力・標準エラーを取得する
+          run_aws_capture wait_output aws ssm wait command-executed \
+            --command-id "${command_id}" \
+            --instance-id "${TARGET_INSTANCE_ID}"
+
+          run_aws_capture status aws ssm get-command-invocation \
+            --command-id "${command_id}" \
+            --instance-id "${TARGET_INSTANCE_ID}" \
+            --query 'Status' \
+            --output text
+
+          run_aws_capture stdout aws ssm get-command-invocation \
+            --command-id "${command_id}" \
+            --instance-id "${TARGET_INSTANCE_ID}" \
+            --query 'StandardOutputContent' \
+            --output text
+
+          run_aws_capture stderr aws ssm get-command-invocation \
+            --command-id "${command_id}" \
+            --instance-id "${TARGET_INSTANCE_ID}" \
+            --query 'StandardErrorContent' \
+            --output text
+
+          {
+            echo "## SSM Test Result"
+            echo ""
+            echo "- Document: \`${RECIPE_NAME}\`"
+            echo "- Instance: \`${TARGET_INSTANCE_ID}\`"
+            echo "- Command ID: \`${command_id}\`"
+            echo "- Status: \`${status}\`"
+            echo ""
+            echo "### Standard Output"
+            echo '```'
+            printf '%s\n' "${stdout}"
+            echo '```'
+            echo ""
+            echo "### Standard Error"
+            echo '```'
+            printf '%s\n' "${stderr}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # SSM ステータス異常、または標準エラー出力ありの場合は workflow を失敗扱いにする
+          if [ "${status}" != "Success" ]; then
+            echo "SSM command status was ${status}" >&2
+            exit 1
+          fi
+
+          if [ -n "$(printf '%s' "${stderr}" | tr -d '[:space:]')" ]; then
+            echo "::error::SSM command wrote to standard error"
+            exit 1
+          fi

@@ -14,6 +14,7 @@ env:
   AWS_REGION: ap-northeast-1
   DOC_DIR: command_documents/healthcheck
   PLAN_ARTIFACT_NAME: ssm-deploy-plan
+  # JavaScript製 action を Node.js 24 で実行させるための環境変数
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
@@ -37,6 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          # 管理対象の JSON が UTF-8 として読めることを確認する
           for f in "${DOC_DIR}"/*.json; do
             iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
           done
@@ -45,6 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          # すべての JSON が構文的に正しいことを確認する
           for f in "${DOC_DIR}"/*.json; do
             jq -e . "$f" > /dev/null
           done
@@ -54,6 +57,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # PR の差分範囲を基準に、今回対象となるドキュメントだけを抽出する
           base_sha="${{ github.event.pull_request.base.sha }}"
           head_sha="${{ github.event.pull_request.head.sha }}"
 
@@ -95,6 +99,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 承認前に確認できるよう、反映予定を plan ファイルと summary にまとめる
           mkdir -p plan
           : > plan/plan.tsv
 
@@ -118,6 +123,7 @@ jobs:
             name="${base%.*}"
             action="skip"
 
+            # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
             local_norm="$(jq -S -c . "$f")"
 
             if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
@@ -183,6 +189,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # plan に従って create/update を実行し、skip は省略する
           while IFS=$'\t' read -r action name file_path; do
             [ -n "$action" ] || continue
 
@@ -203,6 +210,7 @@ jobs:
                   --document-format JSON \
                   --document-version '$LATEST'
 
+                # 更新直後の最新版をデフォルト版へ切り替える
                 latest_ver="$(aws ssm describe-document \
                   --name "$name" \
                   --query 'Document.LatestVersion' \
