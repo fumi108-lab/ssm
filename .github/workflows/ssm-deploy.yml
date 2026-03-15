@@ -5,6 +5,10 @@ on:
     branches: ["dev", "main"]
     paths:
       - "command_documents/healthcheck/*.json"
+  push:
+    branches: ["main"]
+    paths:
+      - "command_documents/healthcheck/*.json"
 
 permissions:
   id-token: write
@@ -56,7 +60,6 @@ jobs:
         id: changed_files
         run: |
           set -euo pipefail
-
           # PR の差分範囲を基準に、今回対象となるドキュメントだけを抽出する
           base_sha="${{ github.event.pull_request.base.sha }}"
           head_sha="${{ github.event.pull_request.head.sha }}"
@@ -104,7 +107,7 @@ jobs:
           : > plan/plan.tsv
 
           {
-            echo "# [\`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`]SSM Deploy Plan"
+            echo "# [\`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`] SSM Deploy Plan"
             echo ""
             echo "| Action | Document | File |"
             echo "| --- | --- | --- |"
@@ -114,7 +117,6 @@ jobs:
 
           while IFS= read -r f; do
             [ -n "$f" ] || continue
-
             if [ ! -f "$f" ]; then
               continue
             fi
@@ -129,7 +131,6 @@ jobs:
             if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
               aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
               aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
-
               if [ "$local_norm" != "$aws_norm" ]; then
                 action="update"
               fi
@@ -164,12 +165,12 @@ jobs:
           path: plan
           if-no-files-found: error
 
-  deploy:
-    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') && needs.plan.outputs.actionable_count != '0' }}
+  deploy-dev:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' && needs.plan.outputs.actionable_count != '0' }}
     needs: plan
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.base_ref == 'main' && 'prd-ssm-review' || 'dev-ssm-review' }}
+      name: dev-ssm-review
     steps:
       - uses: actions/checkout@v5
 
@@ -182,7 +183,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy approved documents
@@ -192,7 +193,6 @@ jobs:
           # plan に従って create/update を実行し、skip は省略する
           while IFS=$'\t' read -r action name file_path; do
             [ -n "$action" ] || continue
-
             case "$action" in
               create)
                 echo "Creating document: $name from $file_path"
@@ -229,3 +229,94 @@ jobs:
                 ;;
             esac
           done < plan/plan.tsv
+
+  deploy-prd:
+    if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: prd-ssm-review
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Collect changed documents
+        id: changed_files
+        run: |
+          set -euo pipefail
+
+          before_sha="${{ github.event.before }}"
+          after_sha="${{ github.sha }}"
+
+          mapfile -t changed_files < <(
+            git diff --name-only "$before_sha" "$after_sha" -- "${DOC_DIR}/*.json"
+          )
+
+          printf '%s\n' "${changed_files[@]}" > changed_files.txt
+
+      - name: Deploy changed documents
+        run: |
+          set -euo pipefail
+
+          if [ ! -s changed_files.txt ]; then
+            echo "No changed documents."
+            exit 0
+          fi
+
+          while IFS= read -r file_path; do
+            [ -n "$file_path" ] || continue
+
+            if [ ! -f "$file_path" ]; then
+              echo "Skipping deleted file: $file_path"
+              continue
+            fi
+
+            base="$(basename "$file_path")"
+            name="${base%.*}"
+
+            local_norm="$(jq -S -c . "$file_path")"
+
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
+              aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
+
+              if [ "$local_norm" = "$aws_norm" ]; then
+                echo "Skipping unchanged document: $name"
+                continue
+              fi
+
+              echo "Updating document: $name from $file_path"
+              aws ssm update-document \
+                --name "$name" \
+                --content "file://$file_path" \
+                --document-format JSON \
+                --document-version '$LATEST'
+
+              latest_ver="$(aws ssm describe-document \
+                --name "$name" \
+                --query 'Document.LatestVersion' \
+                --output text)"
+
+              aws ssm update-document-default-version \
+                --name "$name" \
+                --document-version "$latest_ver"
+            else
+              echo "Creating document: $name from $file_path"
+              aws ssm create-document \
+                --name "$name" \
+                --content "file://$file_path" \
+                --document-type "Command" \
+                --document-format JSON
+            fi
+          done < changed_files.txt
