@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Script to check process health",
+  "parameters": {
+    "arg": {
+      "type": "String",
+      "description": "チェック対象のサービス名 / Name of the service to check"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "checkService",
+      "inputs": {
+        "runCommand": [
+          "#!/bin/bash",
+          "echo ver4",
+          "",
+          "arg={{ arg }}",
+          "SUMMARY=\"\"",
+          "",
+          "# 1) $argサービス確認 / Check $arg service",
+          "echo \"1. $argサービス確認 / Check $arg service\"",
+          "echo \"systemctl is-active $arg\"",
+          "STATUS=$(systemctl is-active $arg)",
+          "echo \"$STATUS\"",
+          "if [ \"$STATUS\" = \"active\" ]; then",
+          "SUMMARY=\"OK\"",
+          "else",
+          "SUMMARY=\"NG オフライン時間帯の影響も考慮に入れること / Please consider the impact of offline hours\"",
+          "fi",
+          "echo \"\"",
+          "",
+          "# 2) $argサービスステータス出力 / Show $arg service status",
+          "echo \"2. $argサービスステータス出力 / Show $arg service status\"",
+          "echo \"systemctl status $arg  --no-pager | head -20\"",
+          "systemctl status $arg | head -20",
+          "echo \"\"",
+          "",
+          "# 3) $argプロセス確認 / Check $arg process",
+          "echo \"3. $argプロセス確認 / Check $arg process\"",
+          "echo \"ps -ef | grep $arg | grep -v grep\"",
+          "ps -ef | grep $arg | grep -v grep",
+          "echo \"\"",
+          "",
+          "# サマリ表示 / Display Summary",
+          "echo \"サマリ表示 / Display Summary\"",
+          "echo \"$arg Service: $SUMMARY\"",
+          "echo \"\""
+        ]
+      }
+    }
+  ]
+}
