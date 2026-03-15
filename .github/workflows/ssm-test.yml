@@ -37,8 +37,32 @@ jobs:
           TARGET_INSTANCE_ID: ${{ github.event.inputs.targetInstanceId }}
           RECIPE_ARGS: ${{ github.event.inputs.recipeArgs }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+
+          run_aws() {
+            local output
+            local exit_code
+
+            set +e
+            output="$("$@" 2>&1)"
+            exit_code=$?
+            set -e
+
+            printf '%s\n' "$output"
+
+            if [ "$exit_code" -ne 0 ]; then
+              echo "AWS command failed (${exit_code}): $*" >&2
+              exit "$exit_code"
+            fi
+          }
+
           parameters="{}"
+
+          echo "AWS CLI version:"
+          aws --version
+          echo "Recipe name: ${RECIPE_NAME}"
+          echo "Target instance: ${TARGET_INSTANCE_ID}"
+          echo "Raw recipe args: ${RECIPE_ARGS:-<empty>}"
 
           if [ -n "${RECIPE_ARGS}" ]; then
             parameters="$(printf '%s' "${RECIPE_ARGS}" | jq -Rc '
@@ -56,8 +80,16 @@ jobs:
             ')"
           fi
 
+          echo "Resolved parameters: ${parameters}"
+          echo "Caller identity:"
+          run_aws aws sts get-caller-identity
+          echo "Document check:"
+          run_aws aws ssm describe-document --name "${RECIPE_NAME}" --query 'Document.{Name:Name,Status:Status,DocumentVersion:DocumentVersion}' --output json
+          echo "Managed instance check:"
+          run_aws aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${TARGET_INSTANCE_ID}" --output json
+
           command_id="$(
-            aws ssm send-command \
+            run_aws aws ssm send-command \
               --document-name "${RECIPE_NAME}" \
               --instance-ids "${TARGET_INSTANCE_ID}" \
               --parameters "${parameters}" \
@@ -69,12 +101,12 @@ jobs:
           echo "command_id=${command_id}" >> "${GITHUB_OUTPUT}"
           echo "Sent command: ${command_id}"
 
-          aws ssm wait command-executed \
+          run_aws aws ssm wait command-executed \
             --command-id "${command_id}" \
             --instance-id "${TARGET_INSTANCE_ID}"
 
           status="$(
-            aws ssm get-command-invocation \
+            run_aws aws ssm get-command-invocation \
               --command-id "${command_id}" \
               --instance-id "${TARGET_INSTANCE_ID}" \
               --query 'Status' \
@@ -82,7 +114,7 @@ jobs:
           )"
 
           stdout="$(
-            aws ssm get-command-invocation \
+            run_aws aws ssm get-command-invocation \
               --command-id "${command_id}" \
               --instance-id "${TARGET_INSTANCE_ID}" \
               --query 'StandardOutputContent' \
@@ -90,7 +122,7 @@ jobs:
           )"
 
           stderr="$(
-            aws ssm get-command-invocation \
+            run_aws aws ssm get-command-invocation \
               --command-id "${command_id}" \
               --instance-id "${TARGET_INSTANCE_ID}" \
               --query 'StandardErrorContent' \
