@@ -23,7 +23,7 @@ jobs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
       changed_files_json: ${{ steps.changed_files.outputs.changed_files_json }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -72,7 +72,7 @@ jobs:
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -82,7 +82,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
@@ -151,7 +151,7 @@ jobs:
           echo "actionable_count=$actionable_count" >> "$GITHUB_OUTPUT"
 
       - name: Upload deployment plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.PLAN_ARTIFACT_NAME }}
           path: plan
@@ -164,16 +164,16 @@ jobs:
     environment:
       name: ${{ github.base_ref == 'main' && 'prd-ssm-review' || 'dev-ssm-review' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download deployment plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: ${{ env.PLAN_ARTIFACT_NAME }}
           path: plan
 
       - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
