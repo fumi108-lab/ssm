@@ -1,19 +1,10 @@
 name: ssm-deploy
 
 on:
-  # PR1: feature/* -> dev
   pull_request:
-    branches: ["dev"]
+    branches: ["dev", "main"]
     paths:
       - "command_documents/healthcheck/*.json"
-
-  # PR2がマージされて main に反映されたら prd 実行
-  # push:
-  #     branches: ["main"]
-  #     paths:
-  #         - "command_documents/healthcheck/*.json"
-  #         - ".github/workflows/**"
-  # workflow_dispatch:
 
 permissions:
   id-token: write
@@ -22,194 +13,210 @@ permissions:
 env:
   AWS_REGION: ap-northeast-1
   DOC_DIR: command_documents/healthcheck
+  PLAN_ARTIFACT_NAME: ssm-deploy-plan
 
 jobs:
   validate:
+    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
+    outputs:
+      changed_count: ${{ steps.changed_files.outputs.changed_count }}
+      changed_files_json: ${{ steps.changed_files.outputs.changed_files_json }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Install jq
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
 
-      # 2-1 UTF-8 チェック
-      - name: UTF-8 check (json only)
+      - name: UTF-8 check
         run: |
           set -euo pipefail
-          shopt -s globstar
-          for f in ${DOC_DIR}/**/*.json; do
-            [ -f "$f" ] || continue
+          shopt -s nullglob
+          for f in "${DOC_DIR}"/*.json; do
             iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
           done
 
-      # 2-2 JSON 構文チェック
       - name: JSON parse check
         run: |
           set -euo pipefail
-          shopt -s globstar
-          for f in ${DOC_DIR}/*.json; do
-            [ -f "$f" ] || continue
-            jq . "$f" > /dev/null
+          shopt -s nullglob
+          for f in "${DOC_DIR}"/*.json; do
+            jq -e . "$f" > /dev/null
           done
 
-      # 2-3 SSM Command ドキュメントとしての必須構造チェック（jq）
-      # - name: SSM Command document structure check
-      #   run: |
-      #       set -euo pipefail
-      #       shopt -s globstar
-      #       for f in ${DOC_DIR}/*.json; do
-      #         [ -f "$f" ] || continue
-      #         echo "Checking: $f"
+      - name: Collect changed documents
+        id: changed_files
+        run: |
+          set -euo pipefail
 
-      #         # 必須トップレベル: schemaVersion/mainSteps
-      #         jq -e '
-      #           (.schemaVersion | type=="string" and length>0)
-      #           and
-      #           (.mainSteps | type=="array" and length>0)
-      #         ' "$f" > /dev/null
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
 
-      #         # mainSteps 必須: name/action/inputs
-      #         jq -e '
-      #           .mainSteps
-      #           | all(
-      #               (.name | type=="string" and length>0)
-      #               and
-      #               (.action | type=="string" and (
-      #                     .=="aws:runShellScript"
-      #                  or .=="aws:runPowerShellScript"
-      #                  or .=="aws:runDocument"
-      #                  or .=="aws:runAnsiblePlaybook"
-      #               ))
-      #               and
-      #               (.inputs | type=="object")
-      #           )
-      #         ' "$f" > /dev/null
+          mapfile -t changed_files < <(
+            git diff --name-only "$base_sha" "$head_sha" -- "${DOC_DIR}/*.json"
+          )
 
-      #         # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
-      #         jq -e '
-      #           .mainSteps
-      #           | map(select(.action=="aws:runShellScript"))
-      #           | all(.inputs.commands | type=="array" and length>0)
-      #         ' "$f" > /dev/null
+          changed_json="$(printf '%s\n' "${changed_files[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
 
-      #         # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
-      #         jq -e '
-      #           .mainSteps
-      #           | map(select(.action=="aws:runPowerShellScript"))
-      #           | all(.inputs.commands | type=="array" and length>0)
-      #         ' "$f" > /dev/null
-      #       done
+          echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
+          echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
 
-  deploy_and_run_dev:
-    # PR1のときだけ実行
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+  plan:
+    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') }}
     needs: validate
     runs-on: ubuntu-latest
+    outputs:
+      actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build deployment plan
+        id: build_plan
+        env:
+          CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p plan
+          : > plan/plan.tsv
+
+          {
+            echo "# SSM Deploy Plan"
+            echo ""
+            echo "| Action | Document | File |"
+            echo "| --- | --- | --- |"
+          } > plan/summary.md
+
+          actionable_count=0
+
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+
+            if [ ! -f "$f" ]; then
+              continue
+            fi
+
+            base="$(basename "$f")"
+            name="${base%.*}"
+            action="skip"
+
+            local_norm="$(jq -S -c . "$f")"
+
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
+              aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
+
+              if [ "$local_norm" != "$aws_norm" ]; then
+                action="update"
+              fi
+            else
+              action="create"
+            fi
+
+            if [ "$action" = "create" ] || [ "$action" = "update" ]; then
+              actionable_count=$((actionable_count + 1))
+              echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
+            fi
+
+            printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
+          done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
+
+          {
+            echo ""
+            echo "Actionable documents: \`$actionable_count\`"
+            echo ""
+            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`"
+            echo ""
+            echo "Review this plan artifact before approving the deployment environment."
+          } >> plan/summary.md
+
+          cat plan/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "actionable_count=$actionable_count" >> "$GITHUB_OUTPUT"
+
+      - name: Upload deployment plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT_NAME }}
+          path: plan
+          if-no-files-found: error
+
+  deploy:
+    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') && needs.plan.outputs.actionable_count != '0' }}
+    needs: plan
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.base_ref == 'main' && 'prd-ssm-review' || 'dev-ssm-review' }}
     steps:
       - uses: actions/checkout@v4
 
-      # dev AWSへ（OIDC）
-      - name: Configure AWS (dev)
+      - name: Download deployment plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT_NAME }}
+          path: plan
+
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3 devへSSMドキュメントアップロード（JSON固定）
-      # すでに存在する場合はUpdate, デフォルトバージョンの変更 / 存在しない場合は新規
-      - name: Deploy SSM Command Documents to dev
+      - name: Deploy approved documents
         run: |
           set -euo pipefail
-          shopt -s globstar
-          for f in ${DOC_DIR}/*.json; do
-            [ -f "$f" ] || continue
-            base="$(basename "$f")"
-            name="${base%.*}"
-            echo "Deploying document: $name from $f"
 
-            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-              aws ssm update-document \
-                --name "$name" \
-                --content "file://$f" \
-                --document-format JSON \
-                --document-version '$LATEST'
+          while IFS=$'\t' read -r action name file_path; do
+            [ -n "$action" ] || continue
 
-              LATEST_VER=$(aws ssm describe-document \
-                --name "$name" \
-                --query 'Document.LatestVersion' \
-                --output text)
+            case "$action" in
+              create)
+                echo "Creating document: $name from $file_path"
+                aws ssm create-document \
+                  --name "$name" \
+                  --content "file://$file_path" \
+                  --document-type "Command" \
+                  --document-format JSON
+                ;;
+              update)
+                echo "Updating document: $name from $file_path"
+                aws ssm update-document \
+                  --name "$name" \
+                  --content "file://$file_path" \
+                  --document-format JSON \
+                  --document-version '$LATEST'
 
-              aws ssm update-document-default-version \
-                --name "$name" \
-                --document-version "$LATEST_VER"
-            else  
-              aws ssm create-document \
-                --name "$name" \
-                --content "file://$f" \
-                --document-type "Command" \
-                --document-format JSON
-            fi
-          done
+                latest_ver="$(aws ssm describe-document \
+                  --name "$name" \
+                  --query 'Document.LatestVersion' \
+                  --output text)"
 
-  deploy_and_run_prd:
-    # mainにpush（= PR2マージ後）で実行
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # prd AWSへ（OIDC）
-      - name: Configure AWS (prd)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # 7 prdへSSMドキュメントアップロード
-      - name: Deploy SSM Command Documents to prd
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          for f in ${DOC_DIR}/*.json; do
-            [ -f "$f" ] || continue
-            base="$(basename "$f")"
-            name="${base%.*}"
-            echo "Deploying document: $name from $f"
-
-            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-              aws ssm update-document \
-                --name "$name" \
-                --content "file://$f" \
-                --document-format JSON \
-                --document-version '$LATEST'
-
-              LATEST_VER=$(aws ssm describe-document \
-                --name "$name" \
-                --query 'Document.LatestVersion' \
-                --output text)
-
-              aws ssm update-document-default-version \
-                --name "$name" \
-                --document-version "$LATEST_VER"
-            else  
-              aws ssm create-document \
-                --name "$name" \
-                --content "file://$f" \
-                --document-type "Command" \
-                --document-format JSON
-            fi
-          done
-
-      # 9 Teams通知（Incoming Webhook）
-      - name: Notify Teams
-        if: always()
-        run: |
-          set -euo pipefail
-          STATUS="${{ job.status }}"
-          CMD_ID="${{ steps.run_prd.outputs.command_id }}"
-          TEXT="SSM prd run finished: ${STATUS} (CommandId: ${CMD_ID})"
-          curl -H "Content-Type: application/json" \
-            -d "{\"text\":\"${TEXT}\"}" \
-            "${{ secrets.TEAMS_WEBHOOK_URL }}"
+                aws ssm update-document-default-version \
+                  --name "$name" \
+                  --document-version "$latest_ver"
+                ;;
+              skip)
+                echo "Skipping unchanged document: $name"
+                ;;
+              *)
+                echo "Unknown action '$action' for $name" >&2
+                exit 1
+                ;;
+            esac
+          done < plan/plan.tsv
