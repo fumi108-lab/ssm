@@ -147,4 +147,12 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          [ "${status}" = "Success" ]
+          if [ "${status}" != "Success" ]; then
+            echo "SSM command status was ${status}" >&2
+            exit 1
+          fi
+
+          if [ -n "$(printf '%s' "${stderr}" | tr -d '[:space:]')" ]; then
+            echo "::error::SSM command wrote to standard error"
+            exit 1
+          fi
