@@ -1,4 +1,4 @@
-name: SSM TEST
+name: ssm-test
 run-name: "[${{ github.workflow }} #${{ github.run_number }}][${{ github.event.inputs.recipeName }}] - ${{ github.event.inputs.targetInstanceId }}"
 
 on:
@@ -39,6 +39,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # AWS CLI を実行し、出力を保持しつつ失敗時はその場で終了する
           run_aws_capture() {
             local __resultvar="$1"
             shift
@@ -62,6 +63,7 @@ jobs:
 
           parameters=""
 
+          # Workflow のログ上で実行条件を追えるよう、最初に入力値を出力する
           echo "AWS CLI version:"
           aws --version
           echo "Recipe name: ${RECIPE_NAME}"
@@ -73,6 +75,7 @@ jobs:
             exit 1
           fi
 
+          # この workflow では SSM ドキュメントの引数を arg 1 つに固定して扱う
           parameters="$(
             jq -nc \
               --arg value "${RECIPE_ARGS}" \
@@ -81,6 +84,7 @@ jobs:
 
           echo "Resolved parameters: ${parameters}"
 
+          # 実行前に認証先、ドキュメントの存在、対象インスタンスの到達性を確認する
           echo "Caller identity:"
           run_aws_capture caller_identity aws sts get-caller-identity
           printf '%s\n' "${caller_identity}"
@@ -91,6 +95,7 @@ jobs:
           run_aws_capture instance_info aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${TARGET_INSTANCE_ID}" --output json
           printf '%s\n' "${instance_info}"
 
+          # クォート崩れを避けるため、send-command の引数は配列で組み立てる
           send_command_args=(
             aws ssm send-command
             --document-name "${RECIPE_NAME}"
@@ -106,6 +111,7 @@ jobs:
           echo "command_id=${command_id}" >> "${GITHUB_OUTPUT}"
           echo "Sent command: ${command_id}"
 
+          # 実行完了を待ってから、最終ステータスと標準出力・標準エラーを取得する
           run_aws_capture wait_output aws ssm wait command-executed \
             --command-id "${command_id}" \
             --instance-id "${TARGET_INSTANCE_ID}"
@@ -147,6 +153,7 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+          # SSM ステータス異常、または標準エラー出力ありの場合は workflow を失敗扱いにする
           if [ "${status}" != "Success" ]; then
             echo "SSM command status was ${status}" >&2
             exit 1
