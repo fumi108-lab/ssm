@@ -7,7 +7,7 @@ on:
       recipeName:
         description: "Recipe Name"
         required: true
-        default: "ssm-test"
+        default: "sshd.sh"
       targetInstanceId:
         description: "Target Instance ID"
         required: true
