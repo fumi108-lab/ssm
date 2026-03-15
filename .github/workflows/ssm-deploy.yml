@@ -1,310 +1,215 @@
 name: ssm-deploy
 
 on:
-    # PR1: feature/* -> dev
-    pull_request:
-        branches: ["dev"]
-        paths:
-            - "command_documents/healthcheck/*.json"
-            - ".github/workflows/**"
+  # PR1: feature/* -> dev
+  pull_request:
+    branches: ["dev"]
+    paths:
+      - "command_documents/healthcheck/*.json"
 
-    # PR2がマージされて main に反映されたら prod 実行
-    # push:
-    #     branches: ["main"]
-    #     paths:
-    #         - "command_documents/healthcheck/*.json"
-    #         - ".github/workflows/**"
-    # workflow_dispatch:
+  # PR2がマージされて main に反映されたら prd 実行
+  # push:
+  #     branches: ["main"]
+  #     paths:
+  #         - "command_documents/healthcheck/*.json"
+  #         - ".github/workflows/**"
+  # workflow_dispatch:
 
 permissions:
-    id-token: write
-    contents: read
+  id-token: write
+  contents: read
 
 env:
-    AWS_REGION: ap-northeast-1
-    DOC_DIR: command_documents/healthcheck
+  AWS_REGION: ap-northeast-1
+  DOC_DIR: command_documents/healthcheck
 
 jobs:
-    validate:
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-            - name: Install jq
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y jq
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-            # 2-1 UTF-8 チェック
-            - name: UTF-8 check (json only)
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
-                  done
+      # 2-1 UTF-8 チェック
+      - name: UTF-8 check (json only)
+        run: |
+          set -euo pipefail
+          shopt -s globstar
+          for f in ${DOC_DIR}/**/*.json; do
+            [ -f "$f" ] || continue
+            iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
+          done
 
-            # 2-2 JSON 構文チェック
-            - name: JSON parse check
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/*.json; do
-                    [ -f "$f" ] || continue
-                    jq . "$f" > /dev/null
-                  done
+      # 2-2 JSON 構文チェック
+      - name: JSON parse check
+        run: |
+          set -euo pipefail
+          shopt -s globstar
+          for f in ${DOC_DIR}/*.json; do
+            [ -f "$f" ] || continue
+            jq . "$f" > /dev/null
+          done
 
-            # 2-3 SSM Command ドキュメントとしての必須構造チェック（jq）
-            # - name: SSM Command document structure check
-            #   run: |
-            #       set -euo pipefail
-            #       shopt -s globstar
-            #       for f in ${DOC_DIR}/*.json; do
-            #         [ -f "$f" ] || continue
-            #         echo "Checking: $f"
+      # 2-3 SSM Command ドキュメントとしての必須構造チェック（jq）
+      # - name: SSM Command document structure check
+      #   run: |
+      #       set -euo pipefail
+      #       shopt -s globstar
+      #       for f in ${DOC_DIR}/*.json; do
+      #         [ -f "$f" ] || continue
+      #         echo "Checking: $f"
 
-            #         # 必須トップレベル: schemaVersion/mainSteps
-            #         jq -e '
-            #           (.schemaVersion | type=="string" and length>0)
-            #           and
-            #           (.mainSteps | type=="array" and length>0)
-            #         ' "$f" > /dev/null
+      #         # 必須トップレベル: schemaVersion/mainSteps
+      #         jq -e '
+      #           (.schemaVersion | type=="string" and length>0)
+      #           and
+      #           (.mainSteps | type=="array" and length>0)
+      #         ' "$f" > /dev/null
 
-            #         # mainSteps 必須: name/action/inputs
-            #         jq -e '
-            #           .mainSteps
-            #           | all(
-            #               (.name | type=="string" and length>0)
-            #               and
-            #               (.action | type=="string" and (
-            #                     .=="aws:runShellScript"
-            #                  or .=="aws:runPowerShellScript"
-            #                  or .=="aws:runDocument"
-            #                  or .=="aws:runAnsiblePlaybook"
-            #               ))
-            #               and
-            #               (.inputs | type=="object")
-            #           )
-            #         ' "$f" > /dev/null
+      #         # mainSteps 必須: name/action/inputs
+      #         jq -e '
+      #           .mainSteps
+      #           | all(
+      #               (.name | type=="string" and length>0)
+      #               and
+      #               (.action | type=="string" and (
+      #                     .=="aws:runShellScript"
+      #                  or .=="aws:runPowerShellScript"
+      #                  or .=="aws:runDocument"
+      #                  or .=="aws:runAnsiblePlaybook"
+      #               ))
+      #               and
+      #               (.inputs | type=="object")
+      #           )
+      #         ' "$f" > /dev/null
 
-            #         # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
-            #         jq -e '
-            #           .mainSteps
-            #           | map(select(.action=="aws:runShellScript"))
-            #           | all(.inputs.commands | type=="array" and length>0)
-            #         ' "$f" > /dev/null
+      #         # aws:runShellScript の commands は配列＋要素あり（該当stepがある場合）
+      #         jq -e '
+      #           .mainSteps
+      #           | map(select(.action=="aws:runShellScript"))
+      #           | all(.inputs.commands | type=="array" and length>0)
+      #         ' "$f" > /dev/null
 
-            #         # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
-            #         jq -e '
-            #           .mainSteps
-            #           | map(select(.action=="aws:runPowerShellScript"))
-            #           | all(.inputs.commands | type=="array" and length>0)
-            #         ' "$f" > /dev/null
-            #       done
+      #         # aws:runPowerShellScript の commands は配列＋要素あり（該当stepがある場合）
+      #         jq -e '
+      #           .mainSteps
+      #           | map(select(.action=="aws:runPowerShellScript"))
+      #           | all(.inputs.commands | type=="array" and length>0)
+      #         ' "$f" > /dev/null
+      #       done
 
-    deploy_and_run_dev:
-        # PR1のときだけ実行
-        if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
-        needs: validate
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
+  deploy_and_run_dev:
+    # PR1のときだけ実行
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-            # dev AWSへ（OIDC）
-            - name: Configure AWS (dev)
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
-                  aws-region: ${{ env.AWS_REGION }}
+      # dev AWSへ（OIDC）
+      - name: Configure AWS (dev)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
 
-            # 3 devへSSMドキュメントアップロード（JSON固定）
-            # すでに存在する場合はUpdate, デフォルトバージョンの変更 / 存在しない場合は新規
-            - name: Deploy SSM Command Documents to dev
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/*.json; do
-                    [ -f "$f" ] || continue
-                    base="$(basename "$f")"
-                    name="${base%.*}"
-                    echo "Deploying document: $name from $f"
+      # 3 devへSSMドキュメントアップロード（JSON固定）
+      # すでに存在する場合はUpdate, デフォルトバージョンの変更 / 存在しない場合は新規
+      - name: Deploy SSM Command Documents to dev
+        run: |
+          set -euo pipefail
+          shopt -s globstar
+          for f in ${DOC_DIR}/*.json; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            name="${base%.*}"
+            echo "Deploying document: $name from $f"
 
-                    if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-                      aws ssm update-document \
-                        --name "$name" \
-                        --content "file://$f" \
-                        --document-format JSON \
-                        --document-version '$LATEST'
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws ssm update-document \
+                --name "$name" \
+                --content "file://$f" \
+                --document-format JSON \
+                --document-version '$LATEST'
 
-                      LATEST_VER=$(aws ssm describe-document \
-                        --name "$name" \
-                        --query 'Document.LatestVersion' \
-                        --output text)
+              LATEST_VER=$(aws ssm describe-document \
+                --name "$name" \
+                --query 'Document.LatestVersion' \
+                --output text)
 
-                      aws ssm update-document-default-version \
-                        --name "$name" \
-                        --document-version "$LATEST_VER"
-                    else  
-                      aws ssm create-document \
-                        --name "$name" \
-                        --content "file://$f" \
-                        --document-type "Command" \
-                        --document-format JSON
-                    fi
-                  done
+              aws ssm update-document-default-version \
+                --name "$name" \
+                --document-version "$LATEST_VER"
+            else  
+              aws ssm create-document \
+                --name "$name" \
+                --content "file://$f" \
+                --document-type "Command" \
+                --document-format JSON
+            fi
+          done
 
-            # 4 devへSSM実行
-            # ※ 今は簡易で「先頭のjson」を実行。運用では「変更されたファイルのみ実行」にするのが推奨。
-            - name: Run SSM on dev targets
-              id: run_dev
-              run: |
-                  set -euo pipefail
-                  DOC_FILE="$(ls -1 ${DOC_DIR}/*.json | head -n 1)"
-                  DOC_NAME="$(basename "$DOC_FILE")"
-                  DOC_NAME="${DOC_NAME%.*}"
+  deploy_and_run_prd:
+    # mainにpush（= PR2マージ後）で実行
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-                  echo "Use document: $DOC_NAME"
+      # prd AWSへ（OIDC）
+      - name: Configure AWS (prd)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
+          aws-region: ${{ env.AWS_REGION }}
 
-                  CMD_ID=$(aws ssm send-command \
-                    --document-name "$DOC_NAME" \
-                    --targets "Key=tag:SSMTarget,Values=dev" \
-                    --comment "Triggered by GitHub Actions (dev, PR:${{ github.event.pull_request.number }})" \
-                    --query "Command.CommandId" --output text)
+      # 7 prdへSSMドキュメントアップロード
+      - name: Deploy SSM Command Documents to prd
+        run: |
+          set -euo pipefail
+          shopt -s globstar
+          for f in ${DOC_DIR}/*.json; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            name="${base%.*}"
+            echo "Deploying document: $name from $f"
 
-                  echo "command_id=$CMD_ID" >> $GITHUB_OUTPUT
-                  echo "CommandId: $CMD_ID"
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws ssm update-document \
+                --name "$name" \
+                --content "file://$f" \
+                --document-format JSON \
+                --document-version '$LATEST'
 
-            # 5 実行結果の収集（Actions Summary + artifact）
-            - name: Collect results (dev)
-              run: |
-                  set -euo pipefail
-                  CMD_ID="${{ steps.run_dev.outputs.command_id }}"
+              LATEST_VER=$(aws ssm describe-document \
+                --name "$name" \
+                --query 'Document.LatestVersion' \
+                --output text)
 
-                  aws ssm list-command-invocations \
-                    --command-id "$CMD_ID" \
-                    --details \
-                    --output json > dev-ssm-result.json
+              aws ssm update-document-default-version \
+                --name "$name" \
+                --document-version "$LATEST_VER"
+            else  
+              aws ssm create-document \
+                --name "$name" \
+                --content "file://$f" \
+                --document-type "Command" \
+                --document-format JSON
+            fi
+          done
 
-                  echo "### Dev SSM Result (PR #${{ github.event.pull_request.number }})" >> $GITHUB_STEP_SUMMARY
-                  jq -r '.CommandInvocations[] | "- \(.InstanceId) : \(.Status) (\(.StatusDetails))"' dev-ssm-result.json >> $GITHUB_STEP_SUMMARY
-
-                  # 失敗があればジョブを落とす
-                  jq -e '.CommandInvocations | all(.Status=="Success")' dev-ssm-result.json > /dev/null
-
-            - name: Upload dev result artifact
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: dev-ssm-result
-                  path: dev-ssm-result.json
-
-    deploy_and_run_prod:
-        # mainにpush（= PR2マージ後）で実行
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        needs: validate
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-
-            # prod AWSへ（OIDC）
-            - name: Configure AWS (prod)
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
-                  aws-region: ${{ env.AWS_REGION }}
-
-            # AWS側検証（可能なら）
-            - name: Validate via AWS API (prod)
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    echo "AWS validate-document-content: $f"
-                    aws ssm validate-document-content --content "file://$f" >/dev/null
-                  done
-
-            # 7 prodへSSMドキュメントアップロード
-            - name: Deploy SSM Command Documents to prod
-              run: |
-                  set -euo pipefail
-                  shopt -s globstar
-                  for f in ${DOC_DIR}/**/*.json; do
-                    [ -f "$f" ] || continue
-                    base="$(basename "$f")"
-                    name="${base%.*}"
-                    echo "Deploying document: $name from $f"
-
-                    if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-                      aws ssm update-document \
-                        --name "$name" \
-                        --content "file://$f" \
-                        --document-format JSON
-                      aws ssm update-document-default-version \
-                        --name "$name" \
-                        --document-version '$LATEST'
-                    else
-                      aws ssm create-document \
-                        --name "$name" \
-                        --content "file://$f" \
-                        --document-type "Command" \
-                        --document-format JSON
-                    fi
-                  done
-
-            # 8 prodへSSM実行
-            - name: Run SSM on prod targets
-              id: run_prod
-              run: |
-                  set -euo pipefail
-                  DOC_FILE="$(ls -1 ${DOC_DIR}/*.json | head -n 1)"
-                  DOC_NAME="$(basename "$DOC_FILE")"
-                  DOC_NAME="${DOC_NAME%.*}"
-
-                  echo "Use document: $DOC_NAME"
-
-                  CMD_ID=$(aws ssm send-command \
-                    --document-name "$DOC_NAME" \
-                    --targets "Key=tag:SSMTarget,Values=prod" \
-                    --comment "Triggered by GitHub Actions (prod, commit:${{ github.sha }})" \
-                    --query "Command.CommandId" --output text)
-
-                  echo "command_id=$CMD_ID" >> $GITHUB_OUTPUT
-                  echo "CommandId: $CMD_ID"
-
-            # 8-5 実行結果の収集
-            - name: Collect results (prod)
-              if: always()
-              run: |
-                  set -euo pipefail
-                  CMD_ID="${{ steps.run_prod.outputs.command_id }}"
-
-                  aws ssm list-command-invocations \
-                    --command-id "$CMD_ID" \
-                    --details \
-                    --output json > prod-ssm-result.json
-
-                  echo "### Prod SSM Result" >> $GITHUB_STEP_SUMMARY
-                  jq -r '.CommandInvocations[] | "- \(.InstanceId) : \(.Status) (\(.StatusDetails))"' prod-ssm-result.json >> $GITHUB_STEP_SUMMARY
-
-                  # 失敗があれば失敗扱いにする（Teamsにも失敗通知が飛ぶ）
-                  jq -e '.CommandInvocations | all(.Status=="Success")' prod-ssm-result.json > /dev/null
-
-            - name: Upload prod result artifact
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: prod-ssm-result
-                  path: prod-ssm-result.json
-
-            # 9 Teams通知（Incoming Webhook）
-            - name: Notify Teams
-              if: always()
-              run: |
-                  set -euo pipefail
-                  STATUS="${{ job.status }}"
-                  CMD_ID="${{ steps.run_prod.outputs.command_id }}"
-                  TEXT="SSM prod run finished: ${STATUS} (CommandId: ${CMD_ID})"
-                  curl -H "Content-Type: application/json" \
-                    -d "{\"text\":\"${TEXT}\"}" \
-                    "${{ secrets.TEAMS_WEBHOOK_URL }}"
+      # 9 Teams通知（Incoming Webhook）
+      - name: Notify Teams
+        if: always()
+        run: |
+          set -euo pipefail
+          STATUS="${{ job.status }}"
+          CMD_ID="${{ steps.run_prd.outputs.command_id }}"
+          TEXT="SSM prd run finished: ${STATUS} (CommandId: ${CMD_ID})"
+          curl -H "Content-Type: application/json" \
+            -d "{\"text\":\"${TEXT}\"}" \
+            "${{ secrets.TEAMS_WEBHOOK_URL }}"
