@@ -110,7 +110,6 @@ jobs:
             [ -n "$f" ] || continue
 
             if [ ! -f "$f" ]; then
-              echo "| skipped-missing | - | \`$f\` |" >> plan/summary.md
               continue
             fi
 
@@ -133,10 +132,10 @@ jobs:
 
             if [ "$action" = "create" ] || [ "$action" = "update" ]; then
               actionable_count=$((actionable_count + 1))
+              echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
             fi
 
             printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
-            echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
           done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
 
           {
@@ -170,11 +169,6 @@ jobs:
         with:
           name: ${{ env.PLAN_ARTIFACT_NAME }}
           path: plan
-
-      # - name: Show approved plan
-      #   run: |
-      #     set -euo pipefail
-      #     cat plan/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure AWS (dev)
         uses: aws-actions/configure-aws-credentials@v4
