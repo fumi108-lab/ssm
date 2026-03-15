@@ -7,7 +7,7 @@ on:
     paths:
       - "command_documents/healthcheck/*.json"
 
-  # PR2がマージされて main に反映されたら prod 実行
+  # PR2がマージされて main に反映されたら prd 実行
   # push:
   #     branches: ["main"]
   #     paths:
@@ -152,52 +152,7 @@ jobs:
             fi
           done
 
-      # 4 devへSSM実行
-      # ※ 今は簡易で「先頭のjson」を実行。運用では「変更されたファイルのみ実行」にするのが推奨。
-      - name: Run SSM on dev targets
-        id: run_dev
-        run: |
-          set -euo pipefail
-          DOC_FILE="$(ls -1 ${DOC_DIR}/*.json | head -n 1)"
-          DOC_NAME="$(basename "$DOC_FILE")"
-          DOC_NAME="${DOC_NAME%.*}"
-
-          echo "Use document: $DOC_NAME"
-
-          CMD_ID=$(aws ssm send-command \
-            --document-name "$DOC_NAME" \
-            --targets "Key=tag:SSMTarget,Values=dev" \
-            --comment "Triggered by GitHub Actions (dev, PR:${{ github.event.pull_request.number }})" \
-            --query "Command.CommandId" --output text)
-
-          echo "command_id=$CMD_ID" >> $GITHUB_OUTPUT
-          echo "CommandId: $CMD_ID"
-
-      # 5 実行結果の収集（Actions Summary + artifact）
-      - name: Collect results (dev)
-        run: |
-          set -euo pipefail
-          CMD_ID="${{ steps.run_dev.outputs.command_id }}"
-
-          aws ssm list-command-invocations \
-            --command-id "$CMD_ID" \
-            --details \
-            --output json > dev-ssm-result.json
-
-          echo "### Dev SSM Result (PR #${{ github.event.pull_request.number }})" >> $GITHUB_STEP_SUMMARY
-          jq -r '.CommandInvocations[] | "- \(.InstanceId) : \(.Status) (\(.StatusDetails))"' dev-ssm-result.json >> $GITHUB_STEP_SUMMARY
-
-          # 失敗があればジョブを落とす
-          jq -e '.CommandInvocations | all(.Status=="Success")' dev-ssm-result.json > /dev/null
-
-      - name: Upload dev result artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dev-ssm-result
-          path: dev-ssm-result.json
-
-  deploy_and_run_prod:
+  deploy_and_run_prd:
     # mainにpush（= PR2マージ後）で実行
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: validate
@@ -205,30 +160,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # prod AWSへ（OIDC）
-      - name: Configure AWS (prod)
+      # prd AWSへ（OIDC）
+      - name: Configure AWS (prd)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
+          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # AWS側検証（可能なら）
-      - name: Validate via AWS API (prod)
+      # 7 prdへSSMドキュメントアップロード
+      - name: Deploy SSM Command Documents to prd
         run: |
           set -euo pipefail
           shopt -s globstar
-          for f in ${DOC_DIR}/**/*.json; do
-            [ -f "$f" ] || continue
-            echo "AWS validate-document-content: $f"
-            aws ssm validate-document-content --content "file://$f" >/dev/null
-          done
-
-      # 7 prodへSSMドキュメントアップロード
-      - name: Deploy SSM Command Documents to prod
-        run: |
-          set -euo pipefail
-          shopt -s globstar
-          for f in ${DOC_DIR}/**/*.json; do
+          for f in ${DOC_DIR}/*.json; do
             [ -f "$f" ] || continue
             base="$(basename "$f")"
             name="${base%.*}"
@@ -238,11 +182,18 @@ jobs:
               aws ssm update-document \
                 --name "$name" \
                 --content "file://$f" \
-                --document-format JSON
+                --document-format JSON \
+                --document-version '$LATEST'
+
+              LATEST_VER=$(aws ssm describe-document \
+                --name "$name" \
+                --query 'Document.LatestVersion' \
+                --output text)
+
               aws ssm update-document-default-version \
                 --name "$name" \
-                --document-version '$LATEST'
-            else
+                --document-version "$LATEST_VER"
+            else  
               aws ssm create-document \
                 --name "$name" \
                 --content "file://$f" \
@@ -251,59 +202,14 @@ jobs:
             fi
           done
 
-      # 8 prodへSSM実行
-      - name: Run SSM on prod targets
-        id: run_prod
-        run: |
-          set -euo pipefail
-          DOC_FILE="$(ls -1 ${DOC_DIR}/*.json | head -n 1)"
-          DOC_NAME="$(basename "$DOC_FILE")"
-          DOC_NAME="${DOC_NAME%.*}"
-
-          echo "Use document: $DOC_NAME"
-
-          CMD_ID=$(aws ssm send-command \
-            --document-name "$DOC_NAME" \
-            --targets "Key=tag:SSMTarget,Values=prod" \
-            --comment "Triggered by GitHub Actions (prod, commit:${{ github.sha }})" \
-            --query "Command.CommandId" --output text)
-
-          echo "command_id=$CMD_ID" >> $GITHUB_OUTPUT
-          echo "CommandId: $CMD_ID"
-
-      # 8-5 実行結果の収集
-      - name: Collect results (prod)
-        if: always()
-        run: |
-          set -euo pipefail
-          CMD_ID="${{ steps.run_prod.outputs.command_id }}"
-
-          aws ssm list-command-invocations \
-            --command-id "$CMD_ID" \
-            --details \
-            --output json > prod-ssm-result.json
-
-          echo "### Prod SSM Result" >> $GITHUB_STEP_SUMMARY
-          jq -r '.CommandInvocations[] | "- \(.InstanceId) : \(.Status) (\(.StatusDetails))"' prod-ssm-result.json >> $GITHUB_STEP_SUMMARY
-
-          # 失敗があれば失敗扱いにする（Teamsにも失敗通知が飛ぶ）
-          jq -e '.CommandInvocations | all(.Status=="Success")' prod-ssm-result.json > /dev/null
-
-      - name: Upload prod result artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: prod-ssm-result
-          path: prod-ssm-result.json
-
       # 9 Teams通知（Incoming Webhook）
       - name: Notify Teams
         if: always()
         run: |
           set -euo pipefail
           STATUS="${{ job.status }}"
-          CMD_ID="${{ steps.run_prod.outputs.command_id }}"
-          TEXT="SSM prod run finished: ${STATUS} (CommandId: ${CMD_ID})"
+          CMD_ID="${{ steps.run_prd.outputs.command_id }}"
+          TEXT="SSM prd run finished: ${STATUS} (CommandId: ${CMD_ID})"
           curl -H "Content-Type: application/json" \
             -d "{\"text\":\"${TEXT}\"}" \
             "${{ secrets.TEAMS_WEBHOOK_URL }}"
