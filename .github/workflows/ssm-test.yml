@@ -14,13 +14,106 @@ on:
       recipeArgs:
         description: "Recipe Arguments (comma-separated key=value pairs)"
 
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+
 jobs:
   run-ssm-recipe:
     runs-on: ubuntu-latest
     steps:
-      - name: Run SSM Recipe
-        uses: aws-actions/amazon-ssm-run-command@v1
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          recipe-name: ${{ github.event.inputs.recipeName }}
-          target-instance-ids: ${{ github.event.inputs.targetInstanceId }}
-          recipe-arguments: ${{ github.event.inputs.recipeArgs }}
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run SSM Recipe
+        env:
+          RECIPE_NAME: ${{ github.event.inputs.recipeName }}
+          TARGET_INSTANCE_ID: ${{ github.event.inputs.targetInstanceId }}
+          RECIPE_ARGS: ${{ github.event.inputs.recipeArgs }}
+        run: |
+          set -euo pipefail
+          parameters="{}"
+
+          if [ -n "${RECIPE_ARGS}" ]; then
+            parameters="$(printf '%s' "${RECIPE_ARGS}" | jq -Rc '
+              split(",")
+              | map(select(length > 0))
+              | map(split("="; 2))
+              | map(
+                  if length == 2 and .[0] != "" and .[1] != "" then
+                    {key: .[0], value: [.[1]]}
+                  else
+                    error("recipeArgs must be comma-separated key=value pairs")
+                  end
+                )
+              | from_entries
+            ')"
+          fi
+
+          command_id="$(
+            aws ssm send-command \
+              --document-name "${RECIPE_NAME}" \
+              --instance-ids "${TARGET_INSTANCE_ID}" \
+              --parameters "${parameters}" \
+              --comment "Triggered by GitHub Actions run ${{ github.run_id }}" \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+
+          echo "command_id=${command_id}" >> "${GITHUB_OUTPUT}"
+          echo "Sent command: ${command_id}"
+
+          aws ssm wait command-executed \
+            --command-id "${command_id}" \
+            --instance-id "${TARGET_INSTANCE_ID}"
+
+          status="$(
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
+              --query 'Status' \
+              --output text
+          )"
+
+          stdout="$(
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
+              --query 'StandardOutputContent' \
+              --output text
+          )"
+
+          stderr="$(
+            aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
+              --query 'StandardErrorContent' \
+              --output text
+          )"
+
+          {
+            echo "## SSM Test Result"
+            echo ""
+            echo "- Document: \`${RECIPE_NAME}\`"
+            echo "- Instance: \`${TARGET_INSTANCE_ID}\`"
+            echo "- Command ID: \`${command_id}\`"
+            echo "- Status: \`${status}\`"
+            echo ""
+            echo "### Standard Output"
+            echo '```'
+            printf '%s\n' "${stdout}"
+            echo '```'
+            echo ""
+            echo "### Standard Error"
+            echo '```'
+            printf '%s\n' "${stderr}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          [ "${status}" = "Success" ]
