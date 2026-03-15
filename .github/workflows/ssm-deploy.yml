@@ -98,7 +98,7 @@ jobs:
           : > plan/plan.tsv
 
           {
-            echo "# \`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`SSM Deploy Plan"
+            echo "# [\`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`]SSM Deploy Plan"
             echo ""
             echo "| Action | Document | File |"
             echo "| --- | --- | --- |"
