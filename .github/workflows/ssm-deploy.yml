@@ -2,7 +2,7 @@ name: ssm-deploy
 
 on:
   pull_request:
-    branches: ["dev"]
+    branches: ["dev", "main"]
     paths:
       - "command_documents/healthcheck/*.json"
 
@@ -17,7 +17,7 @@ env:
 
 jobs:
   validate:
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
@@ -66,7 +66,7 @@ jobs:
           echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
 
   plan:
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') }}
     needs: validate
     runs-on: ubuntu-latest
     outputs:
@@ -81,10 +81,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Configure AWS (dev)
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Build deployment plan
@@ -142,6 +142,8 @@ jobs:
             echo ""
             echo "Actionable documents: \`$actionable_count\`"
             echo ""
+            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`"
+            echo ""
             echo "Review this plan artifact before approving the deployment environment."
           } >> plan/summary.md
 
@@ -156,11 +158,11 @@ jobs:
           if-no-files-found: error
 
   deploy:
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' && needs.plan.outputs.actionable_count != '0' }}
+    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') && needs.plan.outputs.actionable_count != '0' }}
     needs: plan
     runs-on: ubuntu-latest
     environment:
-      name: dev-ssm-review
+      name: ${{ github.base_ref == 'main' && 'prd-ssm-review' || 'dev-ssm-review' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -170,13 +172,13 @@ jobs:
           name: ${{ env.PLAN_ARTIFACT_NAME }}
           path: plan
 
-      - name: Configure AWS (dev)
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy approved documents to dev
+      - name: Deploy approved documents
         run: |
           set -euo pipefail
 
