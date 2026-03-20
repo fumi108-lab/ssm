@@ -14,7 +14,7 @@
       "inputs": {
         "runCommand": [
           "#!/bin/bash",
-          "echo ver1",
+          "echo ver2",
           "",
           "arg={{ arg }}",
           "SUMMARY=\"\"",
