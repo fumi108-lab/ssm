@@ -168,7 +168,7 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     environment:
-      name: dev-ssm-review
+      name: dev-review
     steps:
       - uses: actions/checkout@v5
 
