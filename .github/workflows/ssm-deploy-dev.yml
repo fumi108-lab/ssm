@@ -1,12 +1,8 @@
-name: ssm-deploy
+name: ssm-deploy-dev
 
 on:
   pull_request:
-    branches: ["dev", "main"]
-    paths:
-      - "command_documents/healthcheck/*.json"
-  push:
-    branches: ["main"]
+    branches: ["dev"]
     paths:
       - "command_documents/healthcheck/*.json"
 
@@ -23,7 +19,7 @@ env:
 
 jobs:
   validate:
-    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') }}
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
@@ -74,7 +70,7 @@ jobs:
           echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
 
   plan:
-    if: ${{ github.event_name == 'pull_request' && (github.base_ref == 'dev' || github.base_ref == 'main') }}
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
     needs: validate
     runs-on: ubuntu-latest
     outputs:
@@ -92,7 +88,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ github.base_ref == 'main' && secrets.AWS_ROLE_PRD || secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Build deployment plan
@@ -229,94 +225,3 @@ jobs:
                 ;;
             esac
           done < plan/plan.tsv
-
-  deploy-prd:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
-    runs-on: ubuntu-latest
-    environment:
-      name: prd-ssm-review
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Install jq
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Collect changed documents
-        id: changed_files
-        run: |
-          set -euo pipefail
-
-          before_sha="${{ github.event.before }}"
-          after_sha="${{ github.sha }}"
-
-          mapfile -t changed_files < <(
-            git diff --name-only "$before_sha" "$after_sha" -- "${DOC_DIR}/*.json"
-          )
-
-          printf '%s\n' "${changed_files[@]}" > changed_files.txt
-
-      - name: Deploy changed documents
-        run: |
-          set -euo pipefail
-
-          if [ ! -s changed_files.txt ]; then
-            echo "No changed documents."
-            exit 0
-          fi
-
-          while IFS= read -r file_path; do
-            [ -n "$file_path" ] || continue
-
-            if [ ! -f "$file_path" ]; then
-              echo "Skipping deleted file: $file_path"
-              continue
-            fi
-
-            base="$(basename "$file_path")"
-            name="${base%.*}"
-
-            local_norm="$(jq -S -c . "$file_path")"
-
-            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-              aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
-              aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
-
-              if [ "$local_norm" = "$aws_norm" ]; then
-                echo "Skipping unchanged document: $name"
-                continue
-              fi
-
-              echo "Updating document: $name from $file_path"
-              aws ssm update-document \
-                --name "$name" \
-                --content "file://$file_path" \
-                --document-format JSON \
-                --document-version '$LATEST'
-
-              latest_ver="$(aws ssm describe-document \
-                --name "$name" \
-                --query 'Document.LatestVersion' \
-                --output text)"
-
-              aws ssm update-document-default-version \
-                --name "$name" \
-                --document-version "$latest_ver"
-            else
-              echo "Creating document: $name from $file_path"
-              aws ssm create-document \
-                --name "$name" \
-                --content "file://$file_path" \
-                --document-type "Command" \
-                --document-format JSON
-            fi
-          done < changed_files.txt
