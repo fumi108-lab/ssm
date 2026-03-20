@@ -171,7 +171,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     environment:
-      name: prd-ssm-review
+      name: prd-review
     steps:
       - uses: actions/checkout@v5
         with:
