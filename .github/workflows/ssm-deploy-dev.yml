@@ -73,6 +73,8 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
     needs: validate
     runs-on: ubuntu-latest
+    environment:
+      name: dev
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
@@ -88,7 +90,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ vars.AWS_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Build deployment plan
@@ -166,7 +168,7 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     environment:
-      name: dev-ssm-review
+      name: dev
     steps:
       - uses: actions/checkout@v5
 
@@ -179,7 +181,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ vars.AWS_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy approved documents
