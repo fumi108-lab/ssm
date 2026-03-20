@@ -77,6 +77,8 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
     needs: validate
     runs-on: ubuntu-latest
+    environment:
+      name: prd
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
@@ -92,7 +94,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
+          role-to-assume: ${{ vars.AWS_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Build deployment plan
@@ -169,7 +171,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     environment:
-      name: prd-ssm-review
+      name: prd
     steps:
       - uses: actions/checkout@v5
         with:
@@ -183,7 +185,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
+          role-to-assume: ${{ vars.AWS_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Collect changed documents
