@@ -1,4 +1,4 @@
-name: ssm-test
+name: common-ssm-test
 run-name: "[${{ github.workflow }} #${{ github.run_number }}][${{ github.event.inputs.recipeName }}] - ${{ github.event.inputs.targetInstanceId }}"
 
 on:
@@ -24,11 +24,13 @@ env:
 jobs:
   run-ssm-recipe:
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'main' && 'prd' || 'dev' }}
     steps:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-to-assume: ${{ vars.AWS_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Run SSM Recipe
