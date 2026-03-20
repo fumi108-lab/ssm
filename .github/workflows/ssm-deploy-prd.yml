@@ -1,0 +1,257 @@
+name: ssm-deploy-prd
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "command_documents/healthcheck/*.json"
+  push:
+    branches: ["main"]
+    paths:
+      - "command_documents/healthcheck/*.json"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  DOC_DIR: command_documents/healthcheck
+  PLAN_ARTIFACT_NAME: ssm-deploy-plan
+  # JavaScript製 action を Node.js 24 で実行させるための環境変数
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  validate:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+    runs-on: ubuntu-latest
+    outputs:
+      changed_count: ${{ steps.changed_files.outputs.changed_count }}
+      changed_files_json: ${{ steps.changed_files.outputs.changed_files_json }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: UTF-8 check
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # 管理対象の JSON が UTF-8 として読めることを確認する
+          for f in "${DOC_DIR}"/*.json; do
+            iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
+          done
+
+      - name: JSON parse check
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # すべての JSON が構文的に正しいことを確認する
+          for f in "${DOC_DIR}"/*.json; do
+            jq -e . "$f" > /dev/null
+          done
+
+      - name: Collect changed documents
+        id: changed_files
+        run: |
+          set -euo pipefail
+          # PR の差分範囲を基準に、今回対象となるドキュメントだけを抽出する
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+
+          mapfile -t changed_files < <(
+            git diff --name-only "$base_sha" "$head_sha" -- "${DOC_DIR}/*.json"
+          )
+
+          changed_json="$(printf '%s\n' "${changed_files[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+
+          echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
+          echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
+
+  plan:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build deployment plan
+        id: build_plan
+        env:
+          CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
+        run: |
+          set -euo pipefail
+
+          # 承認前に確認できるよう、反映予定を plan ファイルと summary にまとめる
+          mkdir -p plan
+          : > plan/plan.tsv
+
+          {
+            echo "# [\`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`] SSM Deploy Plan"
+            echo ""
+            echo "| Action | Document | File |"
+            echo "| --- | --- | --- |"
+          } > plan/summary.md
+
+          actionable_count=0
+
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ ! -f "$f" ]; then
+              continue
+            fi
+
+            base="$(basename "$f")"
+            name="${base%.*}"
+            action="skip"
+
+            # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
+            local_norm="$(jq -S -c . "$f")"
+
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
+              aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
+              if [ "$local_norm" != "$aws_norm" ]; then
+                action="update"
+              fi
+            else
+              action="create"
+            fi
+
+            if [ "$action" = "create" ] || [ "$action" = "update" ]; then
+              actionable_count=$((actionable_count + 1))
+              echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
+            fi
+
+            printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
+          done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
+
+          {
+            echo ""
+            echo "Actionable documents: \`$actionable_count\`"
+            echo ""
+            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`"
+            echo ""
+            echo "Review this plan artifact before approving the deployment environment."
+          } >> plan/summary.md
+
+          cat plan/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "actionable_count=$actionable_count" >> "$GITHUB_OUTPUT"
+
+      - name: Upload deployment plan
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.PLAN_ARTIFACT_NAME }}
+          path: plan
+          if-no-files-found: error
+
+  deploy-prd:
+    if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: prd-ssm-review
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PRD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Collect changed documents
+        id: changed_files
+        run: |
+          set -euo pipefail
+
+          before_sha="${{ github.event.before }}"
+          after_sha="${{ github.sha }}"
+
+          mapfile -t changed_files < <(
+            git diff --name-only "$before_sha" "$after_sha" -- "${DOC_DIR}/*.json"
+          )
+
+          printf '%s\n' "${changed_files[@]}" > changed_files.txt
+
+      - name: Deploy changed documents
+        run: |
+          set -euo pipefail
+
+          if [ ! -s changed_files.txt ]; then
+            echo "No changed documents."
+            exit 0
+          fi
+
+          while IFS= read -r file_path; do
+            [ -n "$file_path" ] || continue
+
+            if [ ! -f "$file_path" ]; then
+              echo "Skipping deleted file: $file_path"
+              continue
+            fi
+
+            base="$(basename "$file_path")"
+            name="${base%.*}"
+
+            local_norm="$(jq -S -c . "$file_path")"
+
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
+              aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
+
+              if [ "$local_norm" = "$aws_norm" ]; then
+                echo "Skipping unchanged document: $name"
+                continue
+              fi
+
+              echo "Updating document: $name from $file_path"
+              aws ssm update-document \
+                --name "$name" \
+                --content "file://$file_path" \
+                --document-format JSON \
+                --document-version '$LATEST'
+
+              latest_ver="$(aws ssm describe-document \
+                --name "$name" \
+                --query 'Document.LatestVersion' \
+                --output text)"
+
+              aws ssm update-document-default-version \
+                --name "$name" \
+                --document-version "$latest_ver"
+            else
+              echo "Creating document: $name from $file_path"
+              aws ssm create-document \
+                --name "$name" \
+                --content "file://$file_path" \
+                --document-type "Command" \
+                --document-format JSON
+            fi
+          done < changed_files.txt
