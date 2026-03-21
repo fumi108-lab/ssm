@@ -8,9 +8,9 @@
 ```text
 .
 ├── .github/workflows/
-│   ├── ssm-deploy-dev.yml
-│   ├── ssm-deploy-prd.yml
-│   └── ssm-test.yml
+│   ├── common-ssm-test.yml
+│   ├── dev-ssm-deploy.yml
+│   └── prd-ssm-deploy.yml
 └── command_documents/healthcheck/
     ├── *.json
     └── templates/
@@ -30,7 +30,7 @@
 
 ## Workflows
 
-### `ssm-deploy-dev`
+### `dev-ssm-deploy`
 
 - トリガー: `dev` ブランチ向け Pull Request
 - 対象パス: `command_documents/healthcheck/*.json`
@@ -48,7 +48,7 @@
 - `dev-review`
   deploy 用。保護ルールを設定する前提です。
 
-### `ssm-deploy-prd`
+### `prd-ssm-deploy`
 
 - トリガー:
   - `main` ブランチ向け Pull Request
@@ -71,12 +71,17 @@
 - `prd-review`
   deploy 用。保護ルールを設定する前提です。
 
-### `ssm-test`
+### `common-ssm-test`
 
 手動実行用 workflow です。
 指定した SSM Document を対象インスタンスへ送信し、標準出力・標準エラーと実行結果を GitHub Actions 上で確認できます。
 
-現在は `AWS_ROLE_DEV` secret を利用しています。
+実行ブランチに応じて参照する environment を切り替えます。
+
+- `main` ブランチ: `prd`
+- それ以外: `dev`
+
+認証には各 environment の `vars.AWS_ROLE` を利用します。
 
 ## GitHub Configuration
 
@@ -89,7 +94,7 @@
 - `prd`
 - `prd-review`
 
-`ssm-deploy-dev.yml` と `ssm-deploy-prd.yml` は、それぞれの environment 内の `vars.AWS_ROLE` を参照します。
+`dev-ssm-deploy.yml`、`prd-ssm-deploy.yml`、`common-ssm-test.yml` は、それぞれの environment 内の `vars.AWS_ROLE` を参照します。
 
 想定する運用は以下です。
 
@@ -98,14 +103,12 @@
 - `dev-review`, `prd-review`
   required reviewers あり。deploy 実行用
 
-### Variables / Secrets
+### Variables
 
 必要な設定は以下です。
 
 - Environment variable: `AWS_ROLE`
   各 environment ごとに設定する、OIDC で AssumeRole する IAM Role ARN
-- Repository secret: `AWS_ROLE_DEV`
-  `ssm-test.yml` 用
 
 ### AWS Side Requirements
 
