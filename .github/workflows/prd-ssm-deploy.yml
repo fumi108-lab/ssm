@@ -109,7 +109,7 @@ jobs:
           : > plan/plan.tsv
 
           {
-            echo "# [\`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`] SSM Deploy Plan"
+            echo "# [\`${{ github.base_ref == 'main' && 'prd_' || 'dev' }}\`] SSM Deploy Plan"
             echo ""
             echo "| Action | Document | File |"
             echo "| --- | --- | --- |"
@@ -152,7 +152,7 @@ jobs:
             echo ""
             echo "Actionable documents: \`$actionable_count\`"
             echo ""
-            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`"
+            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd___' || 'dev' }}\`"
             echo ""
             echo "Review this plan artifact before approving the deployment environment."
           } >> plan/summary.md
