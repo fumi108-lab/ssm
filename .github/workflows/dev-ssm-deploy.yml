@@ -120,7 +120,7 @@ jobs:
             fi
 
             base="$(basename "$f")"
-            name="${base%.*}"
+            name="dev-${base%.*}"
             action="skip"
 
             # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
