@@ -11,6 +11,7 @@ permissions:
   contents: read
 
 env:
+  NAME: dev
   AWS_REGION: ap-northeast-1
   DOC_DIR: command_documents/healthcheck
   PLAN_ARTIFACT_NAME: ssm-deploy-plan
@@ -120,7 +121,7 @@ jobs:
             fi
 
             base="$(basename "$f")"
-            name="dev-${base%.*}"
+            name="${{env.NAME}}-${base%.*}"
             action="skip"
 
             # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
