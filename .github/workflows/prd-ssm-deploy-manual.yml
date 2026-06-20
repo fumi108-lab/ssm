@@ -1,4 +1,4 @@
-name: prd-ssm-deploy
+name: prd-ssm-deploy-manual
 
 on:
   workflow_dispatch:
