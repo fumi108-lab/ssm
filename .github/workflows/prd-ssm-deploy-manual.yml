@@ -19,7 +19,7 @@ env:
 
 jobs:
   validate:
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.base_ref == 'main' }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
@@ -57,8 +57,8 @@ jobs:
         run: |
           set -euo pipefail
           # PR の差分範囲を基準に、今回対象となるドキュメントだけを抽出する
-          base_sha="${{ github.event.pull_request.base.sha }}"
-          head_sha="${{ github.event.pull_request.head.sha }}"
+          base_sha="${{ github.event.workflow_dispatch.base.sha }}"
+          head_sha="${{ github.event.workflow_dispatch.head.sha }}"
 
           mapfile -t changed_files < <(
             git diff --name-only "$base_sha" "$head_sha" -- "${DOC_DIR}/*.json"
@@ -70,7 +70,7 @@ jobs:
           echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
 
   plan:
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.base_ref == 'main' }}
     needs: validate
     runs-on: ubuntu-latest
     environment:
