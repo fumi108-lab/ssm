@@ -189,8 +189,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          before_sha="${{ github.event.before }}"
-          after_sha="${{ github.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            before_sha="${{ github.event.pull_request.base.sha }}"
+            after_sha="${{ github.event.pull_request.head.sha }}"
+          else
+            before_sha="${{ github.event.before }}"
+            after_sha="${{ github.sha }}"
+          fi
 
           mapfile -t changed_files < <(
             git diff --name-only "$before_sha" "$after_sha" -- "${DOC_DIR}/*.json"
