@@ -2,9 +2,6 @@ name: prd-ssm-deploy-manual
 
 on:
   workflow_dispatch:
-    # branches: ["main"]
-    # paths:
-    #   - "command_documents/healthcheck/*.json"
 
 permissions:
   id-token: write
@@ -19,7 +16,7 @@ env:
 
 jobs:
   validate:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.base_ref == 'main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
@@ -52,25 +49,19 @@ jobs:
             jq -e . "$f" > /dev/null
           done
 
-      - name: Collect changed documents
+      - name: Collect target documents
         id: changed_files
         run: |
           set -euo pipefail
-          # PR の差分範囲を基準に、今回対象となるドキュメントだけを抽出する
-          base_sha="${{ github.event.workflow_dispatch.base.sha }}"
-          head_sha="${{ github.event.workflow_dispatch.head.sha }}"
-
-          mapfile -t changed_files < <(
-            git diff --name-only "$base_sha" "$head_sha" -- "${DOC_DIR}/*.json"
-          )
-
-          changed_json="$(printf '%s\n' "${changed_files[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
-
-          echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
+          shopt -s nullglob
+          # 手動実行では git diff を使わず、DOC_DIR 配下の全 JSON を対象にする
+          files=("${DOC_DIR}"/*.json)
+          changed_json="$(printf '%s\n' "${files[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          echo "changed_count=${#files[@]}" >> "$GITHUB_OUTPUT"
           echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
 
   plan:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.base_ref == 'main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: validate
     runs-on: ubuntu-latest
     environment:
@@ -99,33 +90,28 @@ jobs:
           CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
         run: |
           set -euo pipefail
-
           # 承認前に確認できるよう、反映予定を plan ファイルと summary にまとめる
           mkdir -p plan
           : > plan/plan.tsv
-
           {
-            echo "# [\`${{ github.base_ref == 'main' && 'prd_' || 'dev' }}\`] SSM Deploy Plan"
+            echo "# [\`prd\`] SSM Deploy Plan (manual)"
             echo ""
             echo "| Action | Document | File |"
             echo "| --- | --- | --- |"
           } > plan/summary.md
 
           actionable_count=0
-
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             if [ ! -f "$f" ]; then
               continue
             fi
-
             base="$(basename "$f")"
             name="${base%.*}"
             action="skip"
 
             # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
             local_norm="$(jq -S -c . "$f")"
-
             if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
               aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
               aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
@@ -148,7 +134,7 @@ jobs:
             echo ""
             echo "Actionable documents: \`$actionable_count\`"
             echo ""
-            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd___' || 'dev' }}\`"
+            echo "Target environment: \`prd\`"
             echo ""
             echo "Review this plan artifact before approving the deployment environment."
           } >> plan/summary.md
@@ -164,7 +150,8 @@ jobs:
           if-no-files-found: error
 
   deploy-prd:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: plan
     runs-on: ubuntu-latest
     environment:
       name: prd-review
@@ -184,32 +171,23 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Collect changed documents
-        id: changed_files
+      - name: Collect target documents
         run: |
           set -euo pipefail
-
-          before_sha="${{ github.event.before }}"
-          after_sha="${{ github.sha }}"
-
-          mapfile -t changed_files < <(
-            git diff --name-only "$before_sha" "$after_sha" -- "${DOC_DIR}/*.json"
-          )
-
-          printf '%s\n' "${changed_files[@]}" > changed_files.txt
+          shopt -s nullglob
+          files=("${DOC_DIR}"/*.json)
+          printf '%s\n' "${files[@]}" > changed_files.txt
 
       - name: Deploy changed documents
         run: |
           set -euo pipefail
-
           if [ ! -s changed_files.txt ]; then
-            echo "No changed documents."
+            echo "No target documents."
             exit 0
           fi
 
           while IFS= read -r file_path; do
             [ -n "$file_path" ] || continue
-
             if [ ! -f "$file_path" ]; then
               echo "Skipping deleted file: $file_path"
               continue
@@ -219,11 +197,9 @@ jobs:
             name="${base%.*}"
 
             local_norm="$(jq -S -c . "$file_path")"
-
             if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
               aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
               aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
-
               if [ "$local_norm" = "$aws_norm" ]; then
                 echo "Skipping unchanged document: $name"
                 continue
