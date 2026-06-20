@@ -1,7 +1,7 @@
 name: prd-ssm-deploy
 
 on:
-  workflow_dispatch:
+  pull_request:
     branches: ["main"]
     paths:
       - "command_documents/healthcheck/*.json"
