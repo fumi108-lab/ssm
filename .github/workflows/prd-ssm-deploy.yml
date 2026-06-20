@@ -1,14 +1,10 @@
 name: prd-ssm-deploy
 
 on:
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "command_documents/healthcheck/*.json"
-  push:
-    branches: ["main"]
-    paths:
-      - "command_documents/healthcheck/*.json"
+  workflow_dispatch:
+    # branches: ["main"]
+    # paths:
+    #   - "command_documents/healthcheck/*.json"
 
 permissions:
   id-token: write
