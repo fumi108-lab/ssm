@@ -2,9 +2,9 @@ name: prd-ssm-deploy
 
 on:
   workflow_dispatch:
-    # branches: ["main"]
-    # paths:
-    #   - "command_documents/healthcheck/*.json"
+    branches: ["main"]
+    paths:
+      - "command_documents/healthcheck/*.json"
 
 permissions:
   id-token: write
@@ -164,7 +164,7 @@ jobs:
           if-no-files-found: error
 
   deploy-prd:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+    if: ${{ github.event_name == 'pull_request' && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     environment:
       name: prd-review
