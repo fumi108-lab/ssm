@@ -75,7 +75,7 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     environment:
-      name: dev
+      name: Development_ReadOnly
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
@@ -169,7 +169,7 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     environment:
-      name: dev-review
+      name: Development
     steps:
       - uses: actions/checkout@v5
 
