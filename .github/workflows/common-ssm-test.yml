@@ -25,7 +25,7 @@ jobs:
   run-ssm-recipe:
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.ref_name == 'main' && 'prd' || 'dev' }}
+      name: ${{ github.ref_name == 'main' && 'Production_ReadOnly' || 'Development_ReadOnly' }}
     steps:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
