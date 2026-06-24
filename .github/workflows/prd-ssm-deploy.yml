@@ -74,7 +74,7 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     environment:
-      name: prd
+      name: Production_ReadOnly
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
@@ -169,7 +169,7 @@ jobs:
       (github.event_name == 'pull_request' && github.base_ref == 'main')
     runs-on: ubuntu-latest
     environment:
-      name: prd-review
+      name: Production
     steps:
       - uses: actions/checkout@v5
         with:
