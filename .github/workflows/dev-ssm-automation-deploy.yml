@@ -1,0 +1,258 @@
+name: dev-automation-deploy
+
+on:
+  pull_request:
+    branches: ["dev"]
+    paths:
+      - "automation_documents/**/*.yaml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  NAME: dev
+  AWS_REGION: ap-northeast-1
+  DOC_DIR: automation_documents
+  PLAN_ARTIFACT_NAME: automation-deploy-plan
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  # validate: UTF-8 確認 + YAML 構文チェック + 変更ファイル抽出
+  # ──────────────────────────────────────────────────────────
+  validate:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+    runs-on: ubuntu-latest
+    outputs:
+      changed_count: ${{ steps.changed_files.outputs.changed_count }}
+      changed_files_json: ${{ steps.changed_files.outputs.changed_files_json }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: UTF-8 check
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in "${DOC_DIR}"/*.yaml; do
+            iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
+            echo "UTF-8 OK: $f"
+          done
+
+      - name: YAML parse check
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Python 標準ライブラリの yaml で構文チェック（jq は YAML を解釈できないため）
+          for f in "${DOC_DIR}"/*.yaml; do
+            python3 - "$f" << 'PYEOF'
+          import yaml, sys
+          path = sys.argv[1]
+          with open(path) as fh:
+              doc = yaml.safe_load(fh)
+          if doc is None:
+              print(f"ERROR: {path} is empty", file=sys.stderr)
+              sys.exit(1)
+          # SSM Automation 必須フィールドの存在を確認
+          for field in ("schemaVersion", "mainSteps"):
+              if field not in doc:
+                  print(f"ERROR: {path} is missing required field '{field}'", file=sys.stderr)
+                  sys.exit(1)
+          print(f"YAML OK: {path}")
+          PYEOF
+          done
+
+      - name: Collect changed documents
+        id: changed_files
+        run: |
+          set -euo pipefail
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+
+          mapfile -t changed_files < <(
+            git diff --name-only "$base_sha" "$head_sha" -- "${DOC_DIR}/*.yaml"
+          )
+
+          changed_json="$(printf '%s\n' "${changed_files[@]}" \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+
+          echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
+          echo "changed_files_json=$changed_json"   >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────────────────
+  # plan: AWS 上との差分を確認して deploy plan を生成・artifact 化
+  # ──────────────────────────────────────────────────────────
+  plan:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: Development_ReadOnly
+    outputs:
+      actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build deployment plan
+        id: build_plan
+        env:
+          CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p plan
+          : > plan/plan.tsv
+
+          {
+            echo "# [\`dev\`] SSM Automation Deploy Plan"
+            echo ""
+            echo "| Action | Document | File |"
+            echo "| --- | --- | --- |"
+          } > plan/summary.md
+
+          actionable_count=0
+
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            [ -f "$f" ]  || continue
+
+            base="$(basename "$f")"
+            name="${{ env.NAME }}-${base%.*}"
+            action="skip"
+
+            # ローカル YAML を JSON に変換して正規化
+            # AWS 側も --document-format JSON で取得することで同じ形式で比較できる
+            local_norm="$(python3 - "$f" << 'PYEOF' | jq -c .
+          import json, yaml, sys
+          with open(sys.argv[1]) as fh:
+              doc = yaml.safe_load(fh)
+          print(json.dumps(doc, sort_keys=True))
+          PYEOF
+          )"
+
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
+              aws_raw="$(aws ssm get-document \
+                --name "$name" \
+                --document-version '$LATEST' \
+                --document-format JSON \
+                --query 'Content' \
+                --output text)"
+              aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
+
+              if [ "$local_norm" != "$aws_norm" ]; then
+                action="update"
+              fi
+            else
+              action="create"
+            fi
+
+            if [ "$action" = "create" ] || [ "$action" = "update" ]; then
+              actionable_count=$((actionable_count + 1))
+              echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
+            fi
+
+            printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
+          done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
+
+          {
+            echo ""
+            echo "Actionable documents: \`$actionable_count\`"
+            echo ""
+            echo "Target environment: \`dev\`"
+            echo ""
+            echo "Review this plan artifact before approving the deployment environment."
+          } >> plan/summary.md
+
+          cat plan/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "actionable_count=$actionable_count" >> "$GITHUB_OUTPUT"
+
+      - name: Upload deployment plan
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.PLAN_ARTIFACT_NAME }}
+          path: plan
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────
+  # deploy-dev: 承認後に Automation ドキュメントを dev 環境へ反映
+  # ──────────────────────────────────────────────────────────
+  deploy-dev:
+    if: >-
+      ${{ github.event_name == 'pull_request'
+       && github.base_ref == 'dev'
+       && needs.plan.outputs.actionable_count != '0' }}
+    needs: plan
+    runs-on: ubuntu-latest
+    environment:
+      name: Development
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download deployment plan
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ env.PLAN_ARTIFACT_NAME }}
+          path: plan
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy approved documents
+        run: |
+          set -euo pipefail
+
+          while IFS=$'\t' read -r action name file_path; do
+            [ -n "$action" ] || continue
+            case "$action" in
+              create)
+                echo "Creating Automation document: $name from $file_path"
+                aws ssm create-document \
+                  --name            "$name" \
+                  --content         "file://$file_path" \
+                  --document-type   "Automation" \
+                  --document-format "YAML"
+                ;;
+              update)
+                echo "Updating Automation document: $name from $file_path"
+                aws ssm update-document \
+                  --name             "$name" \
+                  --content          "file://$file_path" \
+                  --document-format  "YAML" \
+                  --document-version '$LATEST'
+
+                latest_ver="$(aws ssm describe-document \
+                  --name "$name" \
+                  --query 'Document.LatestVersion' \
+                  --output text)"
+
+                aws ssm update-document-default-version \
+                  --name             "$name" \
+                  --document-version "$latest_ver"
+                ;;
+              skip)
+                echo "Skipping unchanged document: $name"
+                ;;
+              *)
+                echo "Unknown action '$action' for $name" >&2
+                exit 1
+                ;;
+            esac
+          done < plan/plan.tsv
