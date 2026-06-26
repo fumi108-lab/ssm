@@ -81,7 +81,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_ROLE }}
+          role-to-assume: ${{ vars.ASSUME_ROLE_ARN_CICD }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Build deployment plan
@@ -168,7 +168,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_ROLE }}
+          role-to-assume: ${{ vars.ASSUME_ROLE_ARN_CICD }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Collect target documents
