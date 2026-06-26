@@ -1,10 +1,10 @@
-name: dev-automation-deploy
+name: dev-ssm-automation-deploy
 
 on:
   pull_request:
     branches: ["dev"]
     paths:
-      - "automation_documents/**/*.yaml"
+      - "automation_documents/healthcheck/*.yaml"
 
 permissions:
   id-token: write
