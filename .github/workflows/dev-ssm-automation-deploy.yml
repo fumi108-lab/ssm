@@ -13,7 +13,7 @@ permissions:
 env:
   NAME: dev
   AWS_REGION: ap-northeast-1
-  DOC_DIR: automation_documents
+  DOC_DIR: automation_documents/healthcheck
   PLAN_ARTIFACT_NAME: automation-deploy-plan
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
