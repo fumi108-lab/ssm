@@ -1,7 +1,7 @@
 schemaVersion: '0.3'
 description: |
   EC2 ヘルスチェック & 診断 Automation
-  対象インスタンスのリソース使用状況・接続性・サービス状態を段階的に確認します。
+  対象インスタンスのリソース使用状況・接続性・サービス状態を段階的に確認します。。
 assumeRole: '{{ AutomationAssumeRole }}'
 parameters:
   InstanceId:
