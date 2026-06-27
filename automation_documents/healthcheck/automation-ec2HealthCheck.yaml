@@ -1,0 +1,206 @@
+schemaVersion: '0.3'
+description: |
+  EC2 ヘルスチェック & 診断 Automation
+  対象インスタンスのリソース使用状況・接続性・サービス状態を段階的に確認します。
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  InstanceId:
+    type: String
+    description: '診断対象の EC2 インスタンスID (例: i-0123456789abcdef0)'
+    allowedPattern: ^i-[0-9a-f]{8,17}$
+  AutomationAssumeRole:
+    type: String
+    description: Automation 実行に使用する IAM Role ARN (省略時はユーザー権限で実行)
+    default: ''
+mainSteps:
+  - description: インスタンスが running 状態であることを確認します。停止中の場合はここで中断。
+    name: VerifyInstanceRunning
+    action: aws:assertAwsResourceProperty
+    nextStep: GetInstanceInfo
+    isCritical: true
+    isEnd: false
+    onFailure: Abort
+    inputs:
+      Service: ec2
+      Api: DescribeInstanceStatus
+      InstanceIds:
+        - '{{ InstanceId }}'
+      IncludeAllInstances: true
+      PropertySelector: $.InstanceStatuses[0].InstanceState.Name
+      DesiredValues:
+        - running
+  - description: インスタンスタイプ・プライベートIP・起動時刻を取得します。
+    name: GetInstanceInfo
+    action: aws:executeAwsApi
+    nextStep: CheckSSMPingStatus
+    isEnd: false
+    onFailure: Continue
+    inputs:
+      Service: ec2
+      Api: DescribeInstances
+      InstanceIds:
+        - '{{ InstanceId }}'
+    outputs:
+      - Name: InstanceType
+        Selector: $.Reservations[0].Instances[0].InstanceType
+        Type: String
+      - Name: PrivateIp
+        Selector: $.Reservations[0].Instances[0].PrivateIpAddress
+        Type: String
+      - Name: LaunchTime
+        Selector: $.Reservations[0].Instances[0].LaunchTime
+        Type: String
+      - Name: SubnetId
+        Selector: $.Reservations[0].Instances[0].SubnetId
+        Type: String
+  - description: SSM Agent が Online であることを確認します。Offline の場合はここで中断。
+    name: CheckSSMPingStatus
+    action: aws:assertAwsResourceProperty
+    nextStep: RunDiskCheck
+    isCritical: true
+    isEnd: false
+    onFailure: Abort
+    inputs:
+      Service: ssm
+      Api: DescribeInstanceInformation
+      Filters:
+        - Key: InstanceIds
+          Values:
+            - '{{ InstanceId }}'
+      PropertySelector: $.InstanceInformationList[0].PingStatus
+      DesiredValues:
+        - Online
+  - description: df でディスク使用量を確認し、70% 超のマウントポイントを一覧表示します。
+    name: RunDiskCheck
+    action: aws:runCommand
+    nextStep: RunMemoryCpuCheck
+    isEnd: false
+    onFailure: Continue
+    inputs:
+      DocumentName: AWS-RunShellScript
+      InstanceIds:
+        - '{{ InstanceId }}'
+      Parameters:
+        commands:
+          - |
+            echo "============================================================"
+            echo " DISK USAGE CHECK"
+            echo "============================================================"
+            echo "[全マウントポイント]"
+            df -hT --output=source,fstype,size,used,avail,pcent,target | column -t
+            echo ""
+            echo "[WARNING: 使用率 70% 超のパーティション]"
+            df -hT --output=pcent,target | awk 'NR>1 && $1+0 >= 70 {print "  !", $0}' || echo "  (なし)"
+            echo ""
+            echo "[大きなディレクトリ Top 10]"
+            du -sh /var/* /home/* /tmp/* 2>/dev/null | sort -rh | head -10
+        executionTimeout: '60'
+    outputs:
+      - Name: DiskCheckOutput
+        Selector: $.Output
+        Type: String
+  - description: free / uptime / ps で CPU・メモリの使用状況とプロセスを確認します。
+    name: RunMemoryCpuCheck
+    action: aws:runCommand
+    nextStep: RunServiceAndNetworkCheck
+    isEnd: false
+    onFailure: Continue
+    inputs:
+      DocumentName: AWS-RunShellScript
+      InstanceIds:
+        - '{{ InstanceId }}'
+      Parameters:
+        commands:
+          - |
+            echo "============================================================"
+            echo " MEMORY & CPU CHECK"
+            echo "============================================================"
+            echo "[メモリ使用状況]"
+            free -h
+            echo ""
+            MEM_TOTAL=$(free | awk '/Mem:/{print $2}')
+            MEM_USED=$(free  | awk '/Mem:/{print $3}')
+            MEM_PCT=$(awk "BEGIN{printf \"%.1f\", ${MEM_USED}/${MEM_TOTAL}*100}")
+            echo "  => メモリ使用率: ${MEM_PCT}%"
+            if awk "BEGIN{exit !(${MEM_PCT} >= 80)}"; then
+              echo "  [WARNING] メモリ使用率が 80% を超えています"
+            fi
+            echo ""
+            echo "[CPU ロードアベレージ]"
+            uptime
+            CORES=$(nproc)
+            echo "  => 論理CPU数: ${CORES} コア"
+            echo ""
+            echo "[CPU使用率 Top 10 プロセス]"
+            ps aux --sort=-%cpu | awk 'NR<=11{printf "  %-10s %-6s %-6s %s\n", $1, $3, $4, $11}'
+            echo ""
+            echo "[メモリ使用量 Top 10 プロセス]"
+            ps aux --sort=-%mem | awk 'NR<=11{printf "  %-10s %-6s %-6s %s\n", $1, $3, $4, $11}'
+        executionTimeout: '60'
+    outputs:
+      - Name: MemoryCpuOutput
+        Selector: $.Output
+        Type: String
+  - description: 失敗サービス・LISTEN ポート・直近システムログを確認します。
+    name: RunServiceAndNetworkCheck
+    action: aws:runCommand
+    isEnd: true
+    onFailure: Continue
+    inputs:
+      DocumentName: AWS-RunShellScript
+      InstanceIds:
+        - '{{ InstanceId }}'
+      Parameters:
+        commands:
+          - |
+            echo "============================================================"
+            echo " SYSTEM & SERVICE CHECK"
+            echo "============================================================"
+            echo "[OS 情報]"
+            uname -r
+            cat /etc/os-release 2>/dev/null | grep -E "^(NAME|VERSION)=" || cat /etc/system-release 2>/dev/null
+            echo ""
+            echo "[稼働時間]"
+            uptime -p 2>/dev/null || uptime
+            echo ""
+
+            echo "============================================================"
+            echo " FAILED SERVICES"
+            echo "============================================================"
+            if command -v systemctl &>/dev/null; then
+              FAILED=$(systemctl list-units --state=failed --no-legend 2>/dev/null)
+              if [ -z "$FAILED" ]; then
+                echo "  (失敗中のサービスなし)"
+              else
+                echo "$FAILED"
+              fi
+            else
+              echo "  systemctl が利用不可です"
+            fi
+            echo ""
+
+            echo "============================================================"
+            echo " NETWORK LISTEN PORTS"
+            echo "============================================================"
+            if command -v ss &>/dev/null; then
+              ss -tulnp | column -t
+            else
+              netstat -tulnp 2>/dev/null | column -t || echo "  ss / netstat が利用不可です"
+            fi
+            echo ""
+
+            echo "============================================================"
+            echo " RECENT SYSTEM LOGS (last 30 lines)"
+            echo "============================================================"
+            if command -v journalctl &>/dev/null; then
+              journalctl -n 30 --no-pager -p warning 2>/dev/null
+            else
+              tail -30 /var/log/messages 2>/dev/null \
+                || tail -30 /var/log/syslog 2>/dev/null \
+                || echo "  ログファイルにアクセスできません"
+            fi
+        executionTimeout: '90'
+    outputs:
+      - Name: ServiceCheckOutput
+        Selector: $.Output
+        Type: String
