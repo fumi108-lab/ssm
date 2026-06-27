@@ -225,7 +225,7 @@ jobs:
             fi
 
             base="$(basename "$file_path")"
-            name="${base%.*}"
+            name="${{ env.NAME }}-${base%.*}"
 
             local_norm="$(jq -S -c . "$file_path")"
 
