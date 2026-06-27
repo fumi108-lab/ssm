@@ -22,7 +22,7 @@ jobs:
   # validate: UTF-8 確認 + YAML 構文チェック + 変更ファイル抽出
   # ──────────────────────────────────────────────────────────
   validate:
-    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' }}
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
