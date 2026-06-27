@@ -5,10 +5,6 @@ on:
     branches: ["main"]
     paths:
       - "automation_documents/healthcheck/*.yaml"
-  # push:
-  #   branches: ["main"]
-  #   paths:
-  #     - "automation_documents/healthcheck/*.yaml"
 
 permissions:
   id-token: write
@@ -17,16 +13,16 @@ permissions:
 env:
   NAME: prd
   AWS_REGION: ap-northeast-1
-  DOC_DIR: automation_documents
+  DOC_DIR: automation_documents/healthcheck
   PLAN_ARTIFACT_NAME: automation-deploy-plan
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   # ──────────────────────────────────────────────────────────
   # validate: UTF-8 確認 + YAML 構文チェック + 変更ファイル抽出
-  # PR / push 両イベントで実行
   # ──────────────────────────────────────────────────────────
   validate:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
@@ -49,6 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          # Python 標準ライブラリの yaml で構文チェック（jq は YAML を解釈できないため）
           for f in "${DOC_DIR}"/*.yaml; do
             python3 - "$f" << 'PYEOF'
           import yaml, sys
@@ -58,6 +55,7 @@ jobs:
           if doc is None:
               print(f"ERROR: {path} is empty", file=sys.stderr)
               sys.exit(1)
+          # SSM Automation 必須フィールドの存在を確認
           for field in ("schemaVersion", "mainSteps"):
               if field not in doc:
                   print(f"ERROR: {path} is missing required field '{field}'", file=sys.stderr)
@@ -66,9 +64,8 @@ jobs:
           PYEOF
           done
 
-      - name: Collect changed documents (PR)
-        id: changed_files_pr
-        if: github.event_name == 'pull_request'
+      - name: Collect changed documents
+        id: changed_files
         run: |
           set -euo pipefail
           base_sha="${{ github.event.pull_request.base.sha }}"
@@ -84,46 +81,11 @@ jobs:
           echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
           echo "changed_files_json=$changed_json"   >> "$GITHUB_OUTPUT"
 
-      - name: Collect changed documents (push)
-        id: changed_files_push
-        if: github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          before_sha="${{ github.event.before }}"
-          after_sha="${{ github.sha }}"
-
-          # 初回 push (before が 0000...の場合) は全ファイルを対象にする
-          if [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
-            mapfile -t changed_files < <(find "${DOC_DIR}" -maxdepth 1 -name "*.yaml")
-          else
-            mapfile -t changed_files < <(
-              git diff --name-only "$before_sha" "$after_sha" -- "${DOC_DIR}/*.yaml"
-            )
-          fi
-
-          changed_json="$(printf '%s\n' "${changed_files[@]}" \
-            | jq -R -s -c 'split("\n") | map(select(length > 0))')"
-
-          echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
-          echo "changed_files_json=$changed_json"   >> "$GITHUB_OUTPUT"
-
-      - name: Export changed files
-        id: changed_files
-        run: |
-          # PR / push どちらのステップが実行されたかで出力を切り替える
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "changed_count=${{ steps.changed_files_pr.outputs.changed_count }}"     >> "$GITHUB_OUTPUT"
-            echo "changed_files_json=${{ steps.changed_files_pr.outputs.changed_files_json }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed_count=${{ steps.changed_files_push.outputs.changed_count }}"     >> "$GITHUB_OUTPUT"
-            echo "changed_files_json=${{ steps.changed_files_push.outputs.changed_files_json }}" >> "$GITHUB_OUTPUT"
-          fi
-
   # ──────────────────────────────────────────────────────────
-  # plan: PR 時のみ実行 — AWS 上との差分確認 & artifact 生成
+  # plan: AWS 上との差分を確認して deploy plan を生成・artifact 化
   # ──────────────────────────────────────────────────────────
   plan:
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
     needs: validate
     runs-on: ubuntu-latest
     environment:
@@ -173,6 +135,8 @@ jobs:
             name="${{ env.NAME }}-${base%.*}"
             action="skip"
 
+            # ローカル YAML を JSON に変換して正規化
+            # AWS 側も --document-format JSON で取得することで同じ形式で比較できる
             local_norm="$(python3 - "$f" << 'PYEOF' | jq -c .
           import json, yaml, sys
           with open(sys.argv[1]) as fh:
@@ -225,26 +189,25 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────
-  # deploy-prd (push): main push 後に変更ドキュメントを prd へ反映
+  # deploy-prd: 承認後に Automation ドキュメントを prd 環境へ反映
   # ──────────────────────────────────────────────────────────
   deploy-prd:
     if: >-
-      ${{ github.event_name == 'push'
-       && github.ref == 'refs/heads/main'
-       && needs.validate.outputs.changed_count != '0' }}
-    needs: validate
+      ${{ github.event_name == 'pull_request'
+       && github.base_ref == 'main'
+       && needs.plan.outputs.actionable_count != '0' }}
+    needs: plan
     runs-on: ubuntu-latest
     environment:
       name: Production
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
-      - name: Install jq
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
+      - name: Download deployment plan
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ env.PLAN_ARTIFACT_NAME }}
+          path: plan
 
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
@@ -252,41 +215,44 @@ jobs:
           role-to-assume: ${{ vars.ASSUME_ROLE_ARN_CICD }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy changed documents
-        env:
-          CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
+      - name: Deploy approved documents
         run: |
           set -euo pipefail
 
-          while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            [ -f "$f" ]  || continue
+          while IFS=$'\t' read -r action name file_path; do
+            [ -n "$action" ] || continue
+            case "$action" in
+              create)
+                echo "Creating Automation document: $name from $file_path"
+                aws ssm create-document \
+                  --name            "$name" \
+                  --content         "file://$file_path" \
+                  --document-type   "Automation" \
+                  --document-format "YAML"
+                ;;
+              update)
+                echo "Updating Automation document: $name from $file_path"
+                aws ssm update-document \
+                  --name             "$name" \
+                  --content          "file://$file_path" \
+                  --document-format  "YAML" \
+                  --document-version '$LATEST'
 
-            base="$(basename "$f")"
-            name="${{ env.NAME }}-${base%.*}"
+                latest_ver="$(aws ssm describe-document \
+                  --name "$name" \
+                  --query 'Document.LatestVersion' \
+                  --output text)"
 
-            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
-              echo "Updating Automation document: $name from $f"
-              aws ssm update-document \
-                --name             "$name" \
-                --content          "file://$f" \
-                --document-format  "YAML" \
-                --document-version '$LATEST'
-
-              latest_ver="$(aws ssm describe-document \
-                --name "$name" \
-                --query 'Document.LatestVersion' \
-                --output text)"
-
-              aws ssm update-document-default-version \
-                --name             "$name" \
-                --document-version "$latest_ver"
-            else
-              echo "Creating Automation document: $name from $f"
-              aws ssm create-document \
-                --name            "$name" \
-                --content         "file://$f" \
-                --document-type   "Automation" \
-                --document-format "YAML"
-            fi
-          done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
+                aws ssm update-document-default-version \
+                  --name             "$name" \
+                  --document-version "$latest_ver"
+                ;;
+              skip)
+                echo "Skipping unchanged document: $name"
+                ;;
+              *)
+                echo "Unknown action '$action' for $name" >&2
+                exit 1
+                ;;
+            esac
+          done < plan/plan.tsv
