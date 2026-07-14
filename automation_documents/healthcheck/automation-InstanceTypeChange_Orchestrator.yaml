@@ -1,0 +1,40 @@
+schemaVersion: '0.3'
+description: Orchestrate A-AUTO queue hold, EC2 instance type change, and A-AUTO queue release.
+parameters:
+  AautoBaseInstanceId:
+    type: String
+    description: EC2 instance ID of A-AUTO base server. This instance runs cip hq and cip aq.
+  TargetInstanceId:
+    type: String
+    description: EC2 instance ID to resize.
+  TargetInstanceType:
+    type: String
+    description: Target EC2 instance type after resize.
+mainSteps:
+  - name: JobQueueHold
+    action: aws:executeAutomation
+    nextStep: InstanceTypeChange
+    isEnd: false
+    onFailure: Abort
+    inputs:
+      DocumentName: __ENV__-aj-infra-automation-A-Auto-JobQueue-Hold
+      RuntimeParameters:
+        InstanceId: '{{ AautoBaseInstanceId }}'
+  - name: InstanceTypeChange
+    action: aws:executeAutomation
+    nextStep: JobQueueRelease
+    isEnd: false
+    onFailure: Abort
+    inputs:
+      DocumentName: __ENV__-aj-infra-automation-EC2-InstanceType-Change
+      RuntimeParameters:
+        InstanceId: '{{ TargetInstanceId }}'
+        TargetInstanceType: '{{ TargetInstanceType }}'
+  - name: JobQueueRelease
+    action: aws:executeAutomation
+    isEnd: true
+    onFailure: Abort
+    inputs:
+      DocumentName: __ENV__-aj-infra-automation-A-Auto-JobQueue-Release
+      RuntimeParameters:
+        InstanceId: '{{ AautoBaseInstanceId }}'
