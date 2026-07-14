@@ -97,10 +97,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ${ENV} プレースホルダーを環境名 (dev/prd) に置換。以降の差分比較・デプロイは置換済みの内容で行われる
-      # sed の pattern 側で $ をエスケープしないと bash が ${ENV} を先に展開してしまうため \${ENV} とする
-      - name: Render ${ENV} placeholder
-        run: sed -i "s/\${ENV}/${NAME}/g" "${DOC_DIR}"/*.yaml
+      # __ENV__ プレースホルダーを環境名 (dev/prd) に置換。以降の差分比較・デプロイは置換済みの内容で行われる
+      - name: Render __ENV__ placeholder
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.yaml
 
       - name: Install jq
         run: |
@@ -208,8 +207,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Render ${ENV} placeholder
-        run: sed -i "s/\${ENV}/${NAME}/g" "${DOC_DIR}"/*.yaml
+      - name: Render __ENV__ placeholder
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.yaml
 
       - name: Download deployment plan
         uses: actions/download-artifact@v6
