@@ -83,6 +83,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      # __ENV__ プレースホルダーを環境名 (dev/prd) に置換。以降の差分比較・デプロイは置換済みの内容で行われる
+      - name: Render __ENV__ placeholder
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.json
+
       - name: Install jq
         run: |
           sudo apt-get update
@@ -106,7 +110,7 @@ jobs:
           : > plan/plan.tsv
 
           {
-            echo "# [\`${{ github.base_ref == 'main' && 'prd______' || 'dev___' }}\`] SSM Deploy Plan"
+            echo "# [\`${{ github.base_ref == 'master' && 'prd' || 'dev' }}\`] SSM Deploy Plan"
             echo ""
             echo "| Action | Document | File |"
             echo "| --- | --- | --- |"
@@ -120,8 +124,10 @@ jobs:
               continue
             fi
 
+            # ファイル名抽出
             base="$(basename "$f")"
-            name="${{env.NAME}}-${base%.*}"
+            # ***.sh.jsonから***.shを切り出して先頭に環境名を付与
+            name="${{ env.NAME }}-${base%.*}"
             action="skip"
 
             # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
@@ -149,7 +155,7 @@ jobs:
             echo ""
             echo "Actionable documents: \`$actionable_count\`"
             echo ""
-            echo "Target environment: \`${{ github.base_ref == 'main' && 'prd' || 'dev' }}\`"
+            echo "Target environment: \`${{ github.base_ref == 'master' && 'prd' || 'dev' }}\`"
             echo ""
             echo "Review this plan artifact before approving the deployment environment."
           } >> plan/summary.md
@@ -172,6 +178,9 @@ jobs:
       name: Development
     steps:
       - uses: actions/checkout@v5
+
+      - name: Render __ENV__ placeholder
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.json
 
       - name: Download deployment plan
         uses: actions/download-artifact@v6
