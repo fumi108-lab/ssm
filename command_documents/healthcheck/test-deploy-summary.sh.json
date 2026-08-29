@@ -1,6 +1,6 @@
 {
   "schemaVersion": "2.2",
-  "description": "Script to check process health",
+  "description": "Test document for verifying the Deploy Result summary (create path)",
   "parameters": {
     "arg": {
       "type": "String",
@@ -14,7 +14,7 @@
       "inputs": {
         "runCommand": [
           "#!/bin/bash",
-          "echo ver3",
+          "echo \"deploy-result-summary test: create\"",
           "",
           "arg={{ arg }}",
           "SUMMARY=\"\"",
