@@ -8,13 +8,6 @@ permissions:
   contents: read
   pull-requests: read
 
-# deploy-dev は承認待ちで停止するため、その間に別の run が deploy へ到達しうる。
-# update-document → update-document-default-version の間に割り込まれると
-# 意図しないバージョンがデフォルトへ昇格するので、直列化する。
-concurrency:
-  group: dev-ssm-deploy
-  cancel-in-progress: false
-
 env:
   NAME: dev
   AWS_REGION: ap-northeast-1
@@ -25,6 +18,7 @@ env:
 
 jobs:
   validate:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
@@ -36,6 +30,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - name: Resolve pull request
         id: pr
@@ -126,6 +125,7 @@ jobs:
           echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
 
   plan:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: validate
     runs-on: ubuntu-latest
     environment:
@@ -142,6 +142,11 @@ jobs:
       - name: Render __ENV__ placeholder
         run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.json
 
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -156,7 +161,6 @@ jobs:
           # PR タイトルはユーザー入力のため、式展開ではなく環境変数経由で渡す
           PR_TITLE: ${{ needs.validate.outputs.pr_title }}
           PR_AUTHOR: ${{ needs.validate.outputs.pr_author }}
-          CHANGED_COUNT: ${{ needs.validate.outputs.changed_count }}
         run: |
           set -euo pipefail
 
@@ -171,16 +175,17 @@ jobs:
             echo ""
             echo "Branch: \`${{ github.ref_name }}\` / Commit: \`${{ github.sha }}\`"
             echo ""
-            echo "Changed documents in this PR: \`${CHANGED_COUNT}\`"
-            echo ""
-            echo "| Action | Document | File | Note |"
-            echo "| --- | --- | --- | --- |"
+            echo "| Action | Document | File |"
+            echo "| --- | --- | --- |"
           } > plan/summary.md
 
           actionable_count=0
 
           while IFS= read -r f; do
             [ -n "$f" ] || continue
+            if [ ! -f "$f" ]; then
+              continue
+            fi
 
             # ファイル名抽出
             base="$(basename "$f")"
@@ -188,34 +193,22 @@ jobs:
             name="${{ env.NAME }}-${base%.*}"
             action="skip"
 
-            # リポジトリから削除されたドキュメントは自動削除せず、
-            # SSM 上に残ることを承認者に伝えるため summary に出す
-            if [ ! -f "$f" ]; then
-              echo "| deleted | \`$name\` | \`$f\` | :warning: SSM 上には残ります。不要なら手動削除してください |" >> plan/summary.md
-              continue
-            fi
-
             # ローカル JSON と AWS 上のドキュメント内容を正規化して差分を判定する
             local_norm="$(jq -S -c . "$f")"
 
-            # 権限不足やスロットリングを「存在しない」と誤判定しないよう、
-            # InvalidDocument のときだけ create とし、それ以外のエラーは停止する
-            if err="$(aws ssm describe-document --name "$name" 2>&1 >/dev/null)"; then
+            if aws ssm describe-document --name "$name" >/dev/null 2>&1; then
               aws_raw="$(aws ssm get-document --name "$name" --document-version '$LATEST' --query 'Content' --output text)"
               aws_norm="$(printf '%s' "$aws_raw" | jq -S -c .)"
               if [ "$local_norm" != "$aws_norm" ]; then
                 action="update"
               fi
-            elif printf '%s' "$err" | grep -q 'InvalidDocument'; then
-              action="create"
             else
-              echo "Failed to describe document '$name': $err" >&2
-              exit 1
+              action="create"
             fi
 
             if [ "$action" = "create" ] || [ "$action" = "update" ]; then
               actionable_count=$((actionable_count + 1))
-              echo "| $action | \`$name\` | \`$f\` | |" >> plan/summary.md
+              echo "| $action | \`$name\` | \`$f\` |" >> plan/summary.md
             fi
 
             printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
@@ -239,10 +232,9 @@ jobs:
           name: ${{ env.PLAN_ARTIFACT_NAME }}
           path: plan
           if-no-files-found: error
-          retention-days: 7
 
   deploy-dev:
-    if: ${{ needs.plan.outputs.actionable_count != '0' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.plan.outputs.actionable_count != '0' }}
     needs: [validate, plan]
     runs-on: ubuntu-latest
     environment:
