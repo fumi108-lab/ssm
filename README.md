@@ -70,12 +70,22 @@
 (後勝ち)。先にデプロイされた内容も SSM のバージョン履歴に残るため、
 `aws ssm list-document-versions --name dev-<doc>` で追跡できます。
 
-並走によって plan 作成時と deploy 実行時で状況が変わった場合、デプロイログに `NOTE:` が出力されます。
+並走によって plan 作成時と deploy 実行時で状況が変わった場合の挙動は以下です。
 
 - plan では `create` だったが他の run が先に作成していた → `update` にフォールバックします。
 - plan では `update` だったが他の run が既に同じ内容を反映していた → skip します。
 
 いずれもワークフローは成功で終わります。それ以外のエラー (権限不足など) は従来どおり停止します。
+
+実際に何が起きたかは、Actions の Summary 画面に出る **Deploy Result** テーブルで確認できます。
+
+| Document | Result | Version | Note |
+| --- | --- | --- | --- |
+| `dev-foo.sh` | updated | 8 | :information_source: 並走した run が先に作成したため create から update へフォールバック |
+
+plan summary は deploy の実行前に生成されるため、その Note 列には deploy 時の出来事は反映されません。
+デプロイ結果は必ず Deploy Result 側を参照してください。途中で失敗した場合も、そこまでに
+処理されたドキュメントは Deploy Result に記録されます。
 
 ### `prd-ssm-deploy`
 
