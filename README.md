@@ -32,14 +32,17 @@
 
 ### `dev-ssm-deploy`
 
-- トリガー: `dev` ブランチ向け Pull Request
+- トリガー: 手動実行 (`workflow_dispatch`)
+  - 入力 `pr_number` に、対象とする `dev` ブランチ向け Pull Request の番号を指定します。
+  - base が `dev` 以外の PR を指定した場合はエラーで停止します。
 - 対象パス: `command_documents/healthcheck/*.json`
 - 処理:
-  1. UTF-8 / JSON 構文チェック
-  2. 変更されたドキュメントの抽出
-  3. AWS 上の既存ドキュメントとの差分確認
-  4. deploy plan の生成と artifact 化
-  5. 承認後に `dev` 環境へ反映
+  1. 指定した PR の head を取得
+  2. UTF-8 / JSON 構文チェック
+  3. PR の差分から変更されたドキュメントを抽出
+  4. AWS 上の既存ドキュメントとの差分確認
+  5. deploy plan の生成と artifact 化
+  6. 承認後に `dev` 環境へ反映
 
 使用 environment:
 
