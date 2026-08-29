@@ -56,8 +56,26 @@
 - `Development`
   deploy 用。`vars.ASSUME_ROLE_ARN_CICD` を参照します。Required reviewers による承認を必須にしています。
 
-同時実行は `concurrency` グループ `dev-ssm-deploy` で直列化しています。承認待ちの run がある間に
-再度実行した場合、2 本目はキャンセルされずキューで待機します。
+同時実行制御:
+
+`concurrency` グループは `dev-ssm-deploy-${{ github.ref }}` です。複数人が別々のドキュメントを
+同時に編集する運用を想定し、**ブランチ (= PR) 単位で並走**します。
+
+- 異なるブランチの run は並走します。
+- 同一ブランチを続けて実行した場合、2 本目はキャンセルされずキューで待機します
+  (`cancel-in-progress: false`)。ただし GitHub は 1 グループにつき pending を 1 つしか保持しないため、
+  3 本目を実行すると 2 本目はキャンセルされ、最新のものに置き換わります。
+
+複数の PR が同じドキュメントを同時に反映した場合は、**後にデプロイされた内容が有効**になります
+(後勝ち)。先にデプロイされた内容も SSM のバージョン履歴に残るため、
+`aws ssm list-document-versions --name dev-<doc>` で追跡できます。
+
+並走によって plan 作成時と deploy 実行時で状況が変わった場合、デプロイログに `NOTE:` が出力されます。
+
+- plan では `create` だったが他の run が先に作成していた → `update` にフォールバックします。
+- plan では `update` だったが他の run が既に同じ内容を反映していた → skip します。
+
+いずれもワークフローは成功で終わります。それ以外のエラー (権限不足など) は従来どおり停止します。
 
 ### `prd-ssm-deploy`
 
@@ -131,11 +149,13 @@
 ## How To Update A Document
 
 1. `command_documents/healthcheck` 配下の JSON を追加または更新します。
-2. `dev` 向け Pull Request を作成します。
-3. GitHub Actions の plan artifact を確認します。
-4. 承認後、`dev` へデプロイします。
-5. `main` へマージします。
-6. `main` 向け plan を確認し、`main` push 後に `prd` へ反映します。
+2. `dev` 向け Pull Request を作成します (draft のままでは実行できません)。
+3. Actions の `dev-ssm-deploy` から Run workflow を実行し、「Use workflow from」で
+   その PR のブランチを選びます。PR 番号の入力は不要です。
+4. plan artifact と Step Summary で反映内容を確認します。
+5. `Development` environment の承認後、`dev` へデプロイされます。
+6. `main` へマージします。
+7. `main` 向け plan を確認し、`main` push 後に `prd` へ反映します。
 
 ## Notes
 
