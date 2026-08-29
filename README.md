@@ -51,10 +51,13 @@
 
 使用 environment:
 
-- `dev`
-  plan 用。`vars.AWS_ROLE` を参照します。
-- `dev-review`
-  deploy 用。保護ルールを設定する前提です。
+- `Development_ReadOnly`
+  plan 用。`vars.ASSUME_ROLE_ARN_CICD` を参照します。保護ルールは設定していません。
+- `Development`
+  deploy 用。`vars.ASSUME_ROLE_ARN_CICD` を参照します。Required reviewers による承認を必須にしています。
+
+同時実行は `concurrency` グループ `dev-ssm-deploy` で直列化しています。承認待ちの run がある間に
+再度実行した場合、2 本目はキャンセルされずキューで待機します。
 
 ### `prd-ssm-deploy`
 
