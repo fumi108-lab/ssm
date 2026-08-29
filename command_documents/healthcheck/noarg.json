@@ -1,6 +1,6 @@
 {
   "schemaVersion": "2.2",
-  "description": "Script to check process health",
+  "description": "Script to check process health 2",
   "mainSteps": [
     {
       "action": "aws:runShellScript",
