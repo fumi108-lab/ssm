@@ -271,12 +271,35 @@ jobs:
         run: |
           set -euo pipefail
 
+          # デプロイ結果を Step Summary に出す。plan summary は deploy 実行前に
+          # 生成されるため、フォールバックなど deploy 時に起きたことは書き込めない。
+          # 途中で失敗しても、そこまでの結果が残るよう trap で出力する。
+          RESULT_ROWS="$RUNNER_TEMP/deploy-result.md"
+          : > "$RESULT_ROWS"
+
+          add_row() {
+            printf '| `%s` | %s | %s | %s |\n' "$1" "$2" "$3" "$4" >> "$RESULT_ROWS"
+          }
+
+          write_summary() {
+            [ -s "$RESULT_ROWS" ] || return 0
+            {
+              echo ""
+              echo "## Deploy Result"
+              echo ""
+              echo "| Document | Result | Version | Note |"
+              echo "| --- | --- | --- | --- |"
+              cat "$RESULT_ROWS"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          trap write_summary EXIT
+
           # ドキュメントを更新し、今回作成したバージョンをデフォルトへ昇格させる。
           # describe-document で最新版を取り直すと、並走する run が間に
           # update-document した場合に他 run のバージョンを昇格させてしまうため、
           # update-document のレスポンスから自分が作ったバージョンを受け取る。
           apply_update() {
-            local name="$1" file_path="$2"
+            local name="$1" file_path="$2" note="$3"
             local new_ver
 
             if ! new_ver="$(aws ssm update-document \
@@ -290,16 +313,20 @@ jobs:
               # 並走する run が既に同じ内容を反映済み。望む状態になっているので成功扱いとする
               if printf '%s' "$new_ver" | grep -q 'DuplicateDocumentContent'; then
                 echo "NOTE: $name already has this content (applied by a concurrent run). Skipping."
+                add_row "$name" "skipped" "-" ":information_source: 並走した run が既に同じ内容を反映済み"
                 return 0
               fi
 
               echo "Failed to update document '$name': $new_ver" >&2
+              add_row "$name" ":x: failed" "-" "update に失敗しました。ジョブログを確認してください"
               return 1
             fi
 
             aws ssm update-document-default-version \
               --name "$name" \
-              --document-version "$new_ver"
+              --document-version "$new_ver" > /dev/null
+
+            add_row "$name" "updated" "$new_ver" "$note"
           }
 
           # plan に従って create/update を実行し、skip は省略する
@@ -308,28 +335,35 @@ jobs:
             case "$action" in
               create)
                 echo "Creating document: $name from $file_path"
-                if ! err="$(aws ssm create-document \
+                if ! out="$(aws ssm create-document \
                   --name "$name" \
                   --content "file://$file_path" \
                   --document-type "Command" \
-                  --document-format JSON 2>&1)"; then
+                  --document-format JSON \
+                  --query 'DocumentDescription.DocumentVersion' \
+                  --output text 2>&1)"; then
 
                   # 並走する run が先に作成済み。update すれば同じ目的を達成できる
-                  if printf '%s' "$err" | grep -q 'DocumentAlreadyExists'; then
+                  if printf '%s' "$out" | grep -q 'DocumentAlreadyExists'; then
                     echo "NOTE: $name was created by a concurrent run. Falling back to update."
-                    apply_update "$name" "$file_path"
+                    apply_update "$name" "$file_path" \
+                      ":information_source: 並走した run が先に作成したため create から update へフォールバック"
                   else
-                    echo "Failed to create document '$name': $err" >&2
+                    echo "Failed to create document '$name': $out" >&2
+                    add_row "$name" ":x: failed" "-" "create に失敗しました。ジョブログを確認してください"
                     exit 1
                   fi
+                else
+                  add_row "$name" "created" "$out" ""
                 fi
                 ;;
               update)
                 echo "Updating document: $name from $file_path"
-                apply_update "$name" "$file_path"
+                apply_update "$name" "$file_path" ""
                 ;;
               skip)
                 echo "Skipping unchanged document: $name"
+                add_row "$name" "skipped" "-" "差分なし"
                 ;;
               *)
                 echo "Unknown action '$action' for $name" >&2
