@@ -33,15 +33,20 @@
 ### `dev-ssm-deploy`
 
 - トリガー: 手動実行 (`workflow_dispatch`)
-  - 入力 `pr_number` に、対象とする `dev` ブランチ向け Pull Request の番号を指定します。
-  - base が `dev` 以外の PR を指定した場合はエラーで停止します。
+  - Actions の Run workflow で「Use workflow from」に**対象ブランチ**を選びます。入力欄はありません。
+  - 選んだブランチに紐づく `dev` 向けの open Pull Request を自動で判定し、その差分を反映します。
+  - 以下の場合はエラーで停止します。
+    - 選んだブランチに base が `dev` の open PR が存在しない（マージ済み・クローズ済み・base が `main` など）
+    - 該当する open PR が複数ある（対象を特定できない）
+    - PR が draft である
+    - PR の head と実行対象コミットが一致しない（実行開始後に push された等）
 - 対象パス: `command_documents/healthcheck/*.json`
 - 処理:
-  1. 指定した PR の head を取得
+  1. 選択ブランチから対象 PR を特定（上記のガードを実施）
   2. UTF-8 / JSON 構文チェック
-  3. PR の差分から変更されたドキュメントを抽出
+  3. `origin/dev` との merge-base を基準に、変更されたドキュメントを抽出
   4. AWS 上の既存ドキュメントとの差分確認
-  5. deploy plan の生成と artifact 化
+  5. deploy plan の生成と artifact 化（summary に PR 番号・タイトル・作者・コミットを表示）
   6. 承認後に `dev` 環境へ反映
 
 使用 environment:
