@@ -97,6 +97,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      # __ENV__ プレースホルダーを環境名 (dev/prd) に置換。以降の差分比較・デプロイは置換済みの内容で行われる
+      - name: Render __ENV__ placeholder
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.yaml
+
       - name: Install jq
         run: |
           sudo apt-get update
@@ -202,6 +206,9 @@ jobs:
       name: Development
     steps:
       - uses: actions/checkout@v5
+
+      - name: Render __ENV__ placeholder
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.yaml
 
       - name: Download deployment plan
         uses: actions/download-artifact@v6

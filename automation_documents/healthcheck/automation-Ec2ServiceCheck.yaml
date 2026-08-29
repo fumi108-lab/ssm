@@ -1,0 +1,82 @@
+description: Check Apache process, wait for approval, then restart Apache or cancel
+schemaVersion: '0.3'
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  InstanceId:
+    type: String
+    description: (Required) Target EC2 instance ID
+  AutomationAssumeRole:
+    type: String
+    description: (Required) IAM role ARN for Automation execution
+  Approvers:
+    type: StringList
+    description: (Required) IAM user/role ARNs allowed to approve
+  NotificationArn:
+    type: String
+    description: (Optional) SNS topic ARN for approval notification
+    default: ''
+  ServiceName:
+    type: String
+    description: (Optional) Apache service name
+    default: httpd
+    allowedValues:
+      - httpd
+      - apache2
+mainSteps:
+  - name: checkApacheProcess
+    action: aws:runCommand
+    nextStep: approvalGate
+    isEnd: false
+    onFailure: Abort
+    inputs:
+      DocumentName: AWS-RunShellScript
+      InstanceIds:
+        - '{{ InstanceId }}'
+      Parameters:
+        commands:
+          - |
+            echo "=== Apache service status ==="
+            systemctl status {{ ServiceName }} --no-pager || true
+            echo ""
+            echo "=== Apache processes ==="
+            ps aux | grep -v grep | grep {{ ServiceName }} || echo "No {{ ServiceName }} process found"
+  - name: approvalGate
+    action: aws:approve
+    timeoutSeconds: 3600
+    nextStep: restartApache
+    isEnd: false
+    onFailure: step:cancelStep
+    inputs:
+      Message: 'Apache ({{ ServiceName }}) を再起動します。プロセス確認結果を確認のうえ承認してください。対象: {{ InstanceId }}'
+      MinRequiredApprovals: 1
+      Approvers:
+        - '{{ Approvers }}'
+  - name: restartApache
+    action: aws:runCommand
+    isEnd: true
+    onFailure: Abort
+    inputs:
+      DocumentName: AWS-RunShellScript
+      InstanceIds:
+        - '{{ InstanceId }}'
+      Parameters:
+        commands:
+          - |
+            systemctl restart {{ ServiceName }}
+            sleep 3
+            systemctl is-active {{ ServiceName }}
+            echo "Apache restart completed"
+  - name: cancelStep
+    action: aws:executeScript
+    isEnd: true
+    inputs:
+      Runtime: python3.12
+      Handler: script_handler
+      Script: |
+        def script_handler(events, context):
+            print("cancel")
+            return {"message": "cancel"}
+    outputs:
+      - Name: message
+        Selector: $.Payload.message
+        Type: String
