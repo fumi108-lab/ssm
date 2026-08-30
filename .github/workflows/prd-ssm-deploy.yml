@@ -38,6 +38,8 @@ env:
   # 対象とする PR の base ブランチ (スペース区切り)。
   # gh pr list --base は 1 値しか取れないため、取得後に絞り込む方式にしている
   BASE_BRANCHES: "main master"
+  # 管理対象ファイルの拡張子。glob / pathspec / エラーメッセージで共有する
+  DOC_EXT: json
   # SSM ドキュメント名の規約: <NAME>-<DOC_TYPE>-<任意>
   # IAM ポリシー (production-ssmPlan / production-ssmExec) の Resource が
   # arn:aws:ssm:<region>:<account>:document/prd-cmd-* に限定されているため、
@@ -133,7 +135,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           # 管理対象の JSON が UTF-8 として読めることを確認する
-          for f in "${DOC_DIR}"/*.json; do
+          for f in "${DOC_DIR}"/*.${DOC_EXT}; do
             iconv -f UTF-8 -t UTF-8 "$f" > /dev/null
           done
 
@@ -142,7 +144,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           # すべての JSON が構文的に正しいことを確認する
-          for f in "${DOC_DIR}"/*.json; do
+          for f in "${DOC_DIR}"/*.${DOC_EXT}; do
             jq -e . "$f" > /dev/null
           done
 
@@ -157,7 +159,7 @@ jobs:
           base_sha="$(git merge-base "origin/${BASE_REF}" HEAD)"
 
           mapfile -t changed_files < <(
-            git diff --name-only "$base_sha" HEAD -- "${DOC_DIR}/*.json"
+            git diff --name-only "$base_sha" HEAD -- "${DOC_DIR}/*.${DOC_EXT}"
           )
 
           # SSM ドキュメント名の導出はここだけで行い、以降のジョブは targets_json を
@@ -198,7 +200,7 @@ jobs:
               continue
             fi
 
-            echo "::error file=${file_path}::SSM document name '${name}' does not match '${NAME}-${DOC_TYPE}-*'. Rename the file to '${DOC_TYPE}-<name>.json'."
+            echo "::error file=${file_path}::SSM document name '${name}' does not match '${NAME}-${DOC_TYPE}-*'. Rename the file to '${DOC_TYPE}-<name>.${DOC_EXT}'."
             invalid=$((invalid + 1))
           done < <(printf '%s' "$TARGETS_JSON" | jq -r '.[] | "\(.file)\t\(.name)"')
 
@@ -228,7 +230,7 @@ jobs:
 
       # __ENV__ プレースホルダーを環境名 (dev/prd) に置換。以降の差分比較・デプロイは置換済みの内容で行われる
       - name: Render __ENV__ placeholder
-        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.json
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.${DOC_EXT}
 
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
@@ -342,7 +344,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Render __ENV__ placeholder
-        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.json
+        run: sed -i "s/__ENV__/${NAME}/g" "${DOC_DIR}"/*.${DOC_EXT}
 
       - name: Download deployment plan
         uses: actions/download-artifact@v6

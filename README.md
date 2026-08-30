@@ -48,18 +48,21 @@ SSM ドキュメント名は `<環境名>-<種別>-<任意>` に統一します�
 `arn:aws:ssm:<region>:<account>:document/dev-cmd-*` のように限定されていることに対応しています。
 規約から外れた名前は `ssm:DescribeDocument` の時点で `AccessDeniedException` になります。
 
-種別は各ワークフローの `env.DOC_TYPE` で定義しています。**変更する場合は IAM 側の Resource も
-合わせて変更してください。**
+種別は各ワークフローの `env.DOC_TYPE`、拡張子は `env.DOC_EXT` で定義しています。
+**`DOC_TYPE` を変更する場合は IAM 側の Resource も合わせて変更してください。**
 
-`dev-ssm-deploy` は `validate` ジョブでこの規約をチェックし、違反していれば AWS に接続する前に
+各デプロイワークフローは `validate` ジョブでこの規約をチェックし、違反していれば AWS に接続する前に
 Annotations 付きで停止します。既存のドキュメントには規約導入前の名前が残っているため、
 チェック対象はその PR で変更されたファイルのみです。
+（`automation_documents/healthcheck/*.yaml` の 2 件はどちらも規約に適合済みです。
+未適合が残っているのは `command_documents/healthcheck` 配下です。）
 
 ## Workflows
 
 ### `dev-ssm-deploy`
 
 `command_documents/healthcheck/*.json` を dev 環境の SSM ドキュメントへ反映する、手動実行のワークフローです。
+以降の 3 本（`prd-ssm-deploy` と automation 系 2 本）も同じロジックのため、仕様はここにまとめて記載します。
 
 **トリガーと実行方法**
 
@@ -176,6 +179,29 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 `concurrency` グループが `prd-ssm-deploy-${{ github.ref }}` である点を除き、
 [`dev-ssm-deploy`](#dev-ssm-deploy) と同じです。Deploy Result テーブルも同様に出力されます。
 
+### `dev-ssm-automation-deploy` / `prd-ssm-automation-deploy`
+
+`automation_documents/healthcheck/*.yaml` を SSM **Automation** ドキュメントとして反映します。
+トリガー・停止条件・処理の流れ・同時実行と競合時の挙動・Deploy Result は
+[`dev-ssm-deploy`](#dev-ssm-deploy) と**まったく同じ**です（環境依存の値以外、ロジックは同一）。
+
+command 系との違いは以下だけです。
+
+| 項目 | command 系 | automation 系 |
+| --- | --- | --- |
+| `DOC_DIR` | `command_documents/healthcheck` | `automation_documents/healthcheck` |
+| `DOC_EXT` | `json` | `yaml` |
+| `DOC_TYPE` | `cmd` | `automation` |
+| ドキュメント名 | `<環境名>-cmd-*` | `<環境名>-automation-*` |
+| 構文チェック | `jq -e .` | Python の `yaml` で解析し、`schemaVersion` / `mainSteps` の存在も検査 |
+| 差分比較 | ローカル JSON をそのまま正規化 | ローカル YAML を JSON へ変換して正規化。AWS 側も `--document-format JSON` で取得 |
+| SSM への登録 | `--document-type Command --document-format JSON` | `--document-type Automation --document-format YAML` |
+| plan artifact 名 | `ssm-deploy-plan` | `automation-deploy-plan` |
+
+使用する environment は command 系と同じ（`Development_ReadOnly` / `Development` /
+`Production_ReadOnly` / `Production`）です。`concurrency` グループは
+`<環境名>-ssm-automation-deploy-${{ github.ref }}` で、command 系とは独立して並走します。
+
 ### `common-ssm-test`
 
 手動実行用 workflow です。
@@ -238,6 +264,9 @@ environment ごとに以下を設定します。いずれも OIDC で AssumeRole
 8. plan artifact と Step Summary で反映内容を確認します。
 9. `Production` environment の承認後、`prd` へデプロイされます。
 10. `main` へマージします。
+
+Automation ドキュメント（`automation_documents/healthcheck/*.yaml`）の場合も流れは同じです。
+実行するワークフローを `dev-ssm-automation-deploy` / `prd-ssm-automation-deploy` に読み替えてください。
 
 ## Design Decisions
 
