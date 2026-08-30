@@ -26,7 +26,29 @@
   新規ドキュメント作成時のテンプレート置き場です。
 
 各 JSON は SSM Document 名と 1:1 に対応します。
-たとえば `command_documents/healthcheck/sshd.sh.json` は、AWS 上では `sshd.sh` という名前のドキュメントとして扱われます。
+
+## Naming Convention
+
+SSM ドキュメント名は `<環境名>-<種別>-<任意>` に統一します。
+
+| ファイル | SSM ドキュメント名 (dev) |
+| --- | --- |
+| `command_documents/healthcheck/cmd-httpd.sh.json` | `dev-cmd-httpd.sh` |
+| `automation_documents/healthcheck/automation-ec2HealthCheck.yaml` | `dev-automation-ec2HealthCheck` |
+
+つまり **ファイル名は `cmd-` / `automation-` で始める**必要があります。ワークフローは
+ファイル名の末尾の拡張子を除いた部分に環境名を前置してドキュメント名を作ります。
+
+この規約は IAM ポリシー (`development-ssmPlan` / `development-ssmExec` など) の Resource が
+`arn:aws:ssm:<region>:<account>:document/dev-cmd-*` のように限定されていることに対応しています。
+規約から外れた名前は `ssm:DescribeDocument` の時点で `AccessDeniedException` になります。
+
+種別は各ワークフローの `env.DOC_TYPE` で定義しています。**変更する場合は IAM 側の Resource も
+合わせて変更してください。**
+
+`dev-ssm-deploy` は `validate` ジョブでこの規約をチェックし、違反していれば AWS に接続する前に
+Annotations 付きで停止します。既存のドキュメントには規約導入前の名前が残っているため、
+チェック対象はその PR で変更されたファイルのみです。
 
 ## Workflows
 
