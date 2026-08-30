@@ -19,6 +19,11 @@ env:
   NAME: dev
   AWS_REGION: ap-northeast-1
   DOC_DIR: command_documents/healthcheck
+  # SSM ドキュメント名の規約: <NAME>-<DOC_TYPE>-<任意>
+  # IAM ポリシー (development-ssmPlan / development-ssmExec) の Resource が
+  # arn:aws:ssm:<region>:<account>:document/dev-cmd-* に限定されているため、
+  # ここを変更する場合は IAM 側の Resource も合わせて変更すること。
+  DOC_TYPE: cmd
   PLAN_ARTIFACT_NAME: ssm-deploy-plan
   # JavaScript製 action を Node.js 24 で実行させるための環境変数
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -28,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
-      changed_files_json: ${{ steps.changed_files.outputs.changed_files_json }}
+      targets_json: ${{ steps.changed_files.outputs.targets_json }}
       pr_number: ${{ steps.pr.outputs.pr_number }}
       pr_title: ${{ steps.pr.outputs.pr_title }}
       pr_author: ${{ steps.pr.outputs.pr_author }}
@@ -120,10 +125,52 @@ jobs:
             git diff --name-only "$base_sha" HEAD -- "${DOC_DIR}/*.json"
           )
 
-          changed_json="$(printf '%s\n' "${changed_files[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          # SSM ドキュメント名の導出はここだけで行い、以降のジョブは targets_json を
+          # そのまま使う。命名規則を変えるときに直すのはこの 1 箇所で済み、
+          # validate でチェックした名前と実際にデプロイされる名前が必ず一致する。
+          targets_json="$(
+            printf '%s\n' "${changed_files[@]}" \
+              | jq -R -s -c --arg env_name "$NAME" '
+                  split("\n")
+                  | map(select(length > 0))
+                  | map({
+                      file: .,
+                      name: ($env_name + "-" + (. | split("/") | last | sub("\\.[^.]*$"; "")))
+                    })
+                '
+          )"
 
           echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
-          echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
+          echo "targets_json=$targets_json" >> "$GITHUB_OUTPUT"
+
+      - name: Check document naming convention
+        env:
+          TARGETS_JSON: ${{ steps.changed_files.outputs.targets_json }}
+        run: |
+          set -euo pipefail
+
+          # 規約から外れた名前は plan の describe-document が IAM の Resource 条件に
+          # 弾かれて AccessDenied になる。AWS に触る前のこの段階で、原因が分かる形で止める。
+          # 既存ドキュメントには規約以前の名前が残っているため、対象は変更ファイルのみ。
+          expected="^${NAME}-${DOC_TYPE}-[A-Za-z0-9._-]+$"
+          invalid=0
+
+          while IFS=$'\t' read -r file_path name; do
+            [ -n "$file_path" ] || continue
+
+            if printf '%s' "$name" | grep -Eq "$expected"; then
+              echo "OK: $file_path -> $name"
+              continue
+            fi
+
+            echo "::error file=${file_path}::SSM document name '${name}' does not match '${NAME}-${DOC_TYPE}-*'. Rename the file to '${DOC_TYPE}-<name>.json'."
+            invalid=$((invalid + 1))
+          done < <(printf '%s' "$TARGETS_JSON" | jq -r '.[] | "\(.file)\t\(.name)"')
+
+          if [ "$invalid" -ne 0 ]; then
+            echo "${invalid} document(s) violate the naming convention '${NAME}-${DOC_TYPE}-*'." >&2
+            exit 1
+          fi
 
   plan:
     needs: validate
@@ -151,7 +198,7 @@ jobs:
       - name: Build deployment plan
         id: build_plan
         env:
-          CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
+          TARGETS_JSON: ${{ needs.validate.outputs.targets_json }}
           PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
           # PR タイトルはユーザー入力のため、式展開ではなく環境変数経由で渡す
           PR_TITLE: ${{ needs.validate.outputs.pr_title }}
@@ -179,13 +226,9 @@ jobs:
 
           actionable_count=0
 
-          while IFS= read -r f; do
+          while IFS=$'\t' read -r f name; do
             [ -n "$f" ] || continue
 
-            # ファイル名抽出
-            base="$(basename "$f")"
-            # ***.sh.jsonから***.shを切り出して先頭に環境名を付与
-            name="${{ env.NAME }}-${base%.*}"
             action="skip"
 
             # リポジトリから削除されたドキュメントは自動削除せず、
@@ -219,7 +262,7 @@ jobs:
             fi
 
             printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
-          done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
+          done < <(printf '%s' "$TARGETS_JSON" | jq -r '.[] | "\(.file)\t\(.name)"')
 
           {
             echo ""
