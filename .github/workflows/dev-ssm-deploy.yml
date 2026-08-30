@@ -1,12 +1,28 @@
 name: dev-ssm-deploy
 
+# command_documents/healthcheck 配下の JSON を dev 環境の SSM ドキュメントへ反映する。
+#
+# 実行方法:
+#   Actions の Run workflow で「Use workflow from」に対象ブランチを選ぶ。入力欄は無い。
+#   選んだブランチに紐づく base=dev の open PR を逆引きし、その差分だけを反映する。
+#
+# ジョブ構成 (この順に実行される):
+#   validate   … PR の特定・JSON 検証・命名規則チェック。AWS には一切触れない
+#   plan       … 読み取り専用ロールで AWS と差分を取り、反映予定を summary/artifact に出す
+#   deploy-dev … Required reviewers の承認後、plan.tsv に従って反映する
+#
+# 承認ゲートは deploy-dev の environment (Development) にある。
+# validate で落ちれば AWS 認証すら発生しないため、検証は可能な限り validate へ寄せる。
+#
+# 設計判断の経緯は README の Design Decisions を参照。
+
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write # OIDC で IAM Role を AssumeRole するために必要
   contents: read
-  pull-requests: read
+  pull-requests: read # validate の gh pr list に必要。外すと対象 PR を特定できない
 
 # 複数人が別々のドキュメントを同時に編集する運用を想定し、ブランチ (= PR) 単位で
 # 並走させる。同一ブランチの重複実行だけを直列化して二重反映を防ぐ。
@@ -25,10 +41,13 @@ env:
   # ここを変更する場合は IAM 側の Resource も合わせて変更すること。
   DOC_TYPE: cmd
   PLAN_ARTIFACT_NAME: ssm-deploy-plan
-  # JavaScript製 action を Node.js 24 で実行させるための環境変数
+  # JavaScript製 action を Node.js 24 で実行させるための環境変数。
+  # 各 action が Node 24 に対応すれば削除できる暫定設定
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # 反映対象の特定と検証だけを行う。AWS 認証情報を持たないため、
+  # ここで落とせば AWS には一切アクセスしない。検証はできる限りこのジョブへ寄せる。
   validate:
     runs-on: ubuntu-latest
     outputs:
@@ -38,6 +57,7 @@ jobs:
       pr_title: ${{ steps.pr.outputs.pr_title }}
       pr_author: ${{ steps.pr.outputs.pr_author }}
     steps:
+      # merge-base の算出に origin/dev の履歴が要るため全履歴を取得する
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -172,14 +192,20 @@ jobs:
             exit 1
           fi
 
+  # 読み取り専用ロールで AWS 上の現在の内容と比較し、反映予定を承認者へ提示する。
+  # ここでは書き込みを一切行わない。
   plan:
     needs: validate
     runs-on: ubuntu-latest
     environment:
+      # 保護ルール無し。読み取り専用の IAM Role を紐付けるためだけに指定している
       name: Development_ReadOnly
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
+      # ref の指定は必須。省略すると github.ref ではなくデフォルトブランチの内容を
+      # 反映してしまう。github.sha は run 全体で固定なので、承認待ちの間にブランチが
+      # 進んでも plan と deploy-dev が同じコミットを見ることが保証される。
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -284,13 +310,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # 承認ゲートの後段。plan.tsv に書かれたとおりに反映するだけで、
+  # 何を反映するかの判断はしない (判断は plan ジョブが済ませている)。
   deploy-dev:
+    # 反映対象が無いときは承認を求めない
     if: ${{ needs.plan.outputs.actionable_count != '0' }}
     needs: [validate, plan]
     runs-on: ubuntu-latest
     environment:
+      # Required reviewers を設定済み。ここでジョブが停止し、承認されるまで進まない
       name: Development
     steps:
+      # plan ジョブと同じコミットを見る必要がある (理由は plan 側のコメントを参照)
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
