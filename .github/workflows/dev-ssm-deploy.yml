@@ -35,6 +35,9 @@ env:
   NAME: dev
   AWS_REGION: ap-northeast-1
   DOC_DIR: command_documents/healthcheck
+  # 対象とする PR の base ブランチ (スペース区切り)。
+  # gh pr list --base は 1 値しか取れないため、取得後に絞り込む方式にしている
+  BASE_BRANCHES: "dev"
   # SSM ドキュメント名の規約: <NAME>-<DOC_TYPE>-<任意>
   # IAM ポリシー (development-ssmPlan / development-ssmExec) の Resource が
   # arn:aws:ssm:<region>:<account>:document/dev-cmd-* に限定されているため、
@@ -56,8 +59,9 @@ jobs:
       pr_number: ${{ steps.pr.outputs.pr_number }}
       pr_title: ${{ steps.pr.outputs.pr_title }}
       pr_author: ${{ steps.pr.outputs.pr_author }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
     steps:
-      # merge-base の算出に origin/dev の履歴が要るため全履歴を取得する
+      # base ブランチとの merge-base 算出に履歴が要るため全履歴を取得する
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -72,20 +76,26 @@ jobs:
           set -euo pipefail
 
           # PR 番号の打ち間違いを防ぐため、実行時に選択したブランチから
-          # base=dev の open PR を逆引きして対象を特定する
-          prs="$(gh pr list --head "$BRANCH" --base dev --state open \
-            --json number,title,author,isDraft,headRefOid)"
+          # open PR を逆引きして対象を特定する。
+          # gh pr list --base は 1 値しか受け付けないので、取得後に BASE_BRANCHES で絞る
+          prs="$(gh pr list --head "$BRANCH" --state open \
+            --json number,title,author,isDraft,headRefOid,baseRefName)"
+
+          prs="$(printf '%s' "$prs" | jq -c --arg bases "$BASE_BRANCHES" '
+            ($bases | split(" ")) as $allowed
+            | [ .[] | select(.baseRefName as $b | $allowed | index($b)) ]
+          ')"
           count="$(printf '%s' "$prs" | jq 'length')"
 
           if [ "$count" -eq 0 ]; then
-            echo "Branch '${BRANCH}' has no open pull request based on 'dev'." >&2
-            echo "Select the branch of an open PR targeting 'dev' in 'Use workflow from'." >&2
+            echo "Branch '${BRANCH}' has no open pull request based on: ${BASE_BRANCHES}." >&2
+            echo "Select the branch of such an open PR in 'Use workflow from'." >&2
             exit 1
           fi
 
           if [ "$count" -gt 1 ]; then
-            echo "Branch '${BRANCH}' has multiple open pull requests based on 'dev':" >&2
-            printf '%s' "$prs" | jq -r '.[] | "  #\(.number) \(.title)"' >&2
+            echo "Branch '${BRANCH}' has multiple open pull requests based on: ${BASE_BRANCHES}" >&2
+            printf '%s' "$prs" | jq -r '.[] | "  #\(.number) -> \(.baseRefName)  \(.title)"' >&2
             echo "Cannot determine the deployment target." >&2
             exit 1
           fi
@@ -95,6 +105,7 @@ jobs:
           pr_author="$(printf '%s' "$prs" | jq -r '.[0].author.login')"
           is_draft="$(printf '%s' "$prs" | jq -r '.[0].isDraft')"
           head_oid="$(printf '%s' "$prs" | jq -r '.[0].headRefOid')"
+          base_ref="$(printf '%s' "$prs" | jq -r '.[0].baseRefName')"
 
           # 作業途中の PR は反映しない
           if [ "$is_draft" = "true" ]; then
@@ -110,11 +121,12 @@ jobs:
           fi
 
           echo "PR #${pr_number} ${pr_title} (@${pr_author})"
-          echo "Branch: ${BRANCH}  Commit: ${RUN_SHA}"
+          echo "Branch: ${BRANCH} -> ${base_ref}  Commit: ${RUN_SHA}"
 
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "pr_title=$pr_title" >> "$GITHUB_OUTPUT"
           echo "pr_author=$pr_author" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
 
       - name: UTF-8 check
         run: |
@@ -136,10 +148,13 @@ jobs:
 
       - name: Collect changed documents
         id: changed_files
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           set -euo pipefail
-          # base ブランチが PR 作成後に進んでいても無関係な差分を拾わないよう merge-base を基準にする
-          base_sha="$(git merge-base origin/dev HEAD)"
+          # base ブランチが PR 作成後に進んでいても無関係な差分を拾わないよう merge-base を基準にする。
+          # base は PR から導出しているので、main / master のどちらでもそのまま動く
+          base_sha="$(git merge-base "origin/${BASE_REF}" HEAD)"
 
           mapfile -t changed_files < <(
             git diff --name-only "$base_sha" HEAD -- "${DOC_DIR}/*.json"

@@ -8,11 +8,16 @@
 ```text
 .
 ├── .github/workflows/
+│   ├── common-ssm-batch-test.yml
 │   ├── common-ssm-test.yml
+│   ├── dev-ssm-automation-deploy.yml
 │   ├── dev-ssm-deploy.yml
+│   ├── prd-ssm-automation-deploy.yml
 │   └── prd-ssm-deploy.yml
+├── automation_documents/healthcheck/
+│   └── automation-*.yaml
 └── command_documents/healthcheck/
-    ├── *.json
+    ├── cmd-*.json
     └── templates/
         ├── template.json
         └── template.sh
@@ -125,26 +130,51 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 
 ### `prd-ssm-deploy`
 
-- トリガー:
-  - `main` ブランチ向け Pull Request
-  - `main` ブランチへの push
-- 対象パス: `command_documents/healthcheck/*.json`
-- 処理:
-  - Pull Request 時
-    1. UTF-8 / JSON 構文チェック
-    2. 変更されたドキュメントの抽出
-    3. AWS 上との差分確認
-    4. deploy plan の生成
-  - push 時
-    1. push 差分から変更ファイルを抽出
-    2. 変更のあるドキュメントのみ create / update
+`command_documents/healthcheck/*.json` を prd 環境の SSM ドキュメントへ反映する、手動実行のワークフローです。
+`dev-ssm-deploy` と**同じ設計・同じロジック**で、環境依存の値（`NAME` / `BASE_BRANCHES` / environment 名）
+だけが異なります。
 
-使用 environment:
+**トリガーと実行方法**
 
-- `prd`
-  plan 用。`vars.AWS_ROLE` を参照します。
-- `prd-review`
-  deploy 用。保護ルールを設定する前提です。
+`workflow_dispatch` のみ。Actions の Run workflow で「Use workflow from」に**対象ブランチ**を選びます。
+選んだブランチに紐づく `main`（または `master`）向けの open Pull Request を自動で判定し、その差分を反映します。
+通常は `dev` ブランチを選ぶことになります。
+
+受け付ける base ブランチは `env.BASE_BRANCHES`（既定 `"main master"`）で定義しています。
+
+**停止条件**
+
+`dev-ssm-deploy` と同じです。いずれも `validate` ジョブで検知し、AWS に接続する前に停止します。
+
+- 選んだブランチに base が `main` / `master` の open PR が存在しない
+- 該当する open PR が複数ある（対象を特定できない）
+- PR が draft である
+- PR の head と実行対象コミットが一致しない（実行開始後に push された等）
+- 変更したファイルの命名が規約から外れている（[Naming Convention](#naming-convention) 参照。prd では `prd-cmd-*`）
+- JSON が UTF-8 として読めない、または構文が不正（変更分だけでなく `DOC_DIR` 配下すべてが対象）
+
+**処理の流れ**
+
+1. 選択ブランチから対象 PR を特定（上記のガードを実施）
+2. UTF-8 / JSON 構文チェック
+3. PR の base との merge-base を基準に、変更されたドキュメントを抽出
+4. 命名規則チェック
+5. AWS 上の既存ドキュメントとの差分確認、deploy plan の生成と artifact 化
+6. 承認後に `prd` 環境へ反映
+
+**使用 environment**
+
+| environment | 用途 | 保護ルール |
+| --- | --- | --- |
+| `Production_ReadOnly` | plan 用。読み取り専用ロールを紐付けるために指定 | なし |
+| `Production` | deploy 用。ここで承認待ちになる | Required reviewers |
+
+どちらも `vars.ASSUME_ROLE_ARN_CICD` を参照します。
+
+**同時実行と競合時の挙動 / 実行結果の確認**
+
+`concurrency` グループが `prd-ssm-deploy-${{ github.ref }}` である点を除き、
+[`dev-ssm-deploy`](#dev-ssm-deploy) と同じです。Deploy Result テーブルも同様に出力されます。
 
 ### `common-ssm-test`
 
@@ -153,37 +183,36 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 
 実行ブランチに応じて参照する environment を切り替えます。
 
-- `main` ブランチ: `prd`
-- それ以外: `dev`
+- `main` ブランチ: `Production_ReadOnly`
+- それ以外: `Development_ReadOnly`
 
-認証には各 environment の `vars.AWS_ROLE` を利用します。
+認証には各 environment の `vars.ASSUME_ROLE_ARN_OPERATION` を利用します
+（デプロイ系が使う `ASSUME_ROLE_ARN_CICD` とは別のロールです）。
 
 ## GitHub Configuration
 
 ### Environments
 
-少なくとも以下の environment を作成してください。
+以下の environment を作成してください。
 
-- `dev`
-- `dev-review`
-- `prd`
-- `prd-review`
+| environment | 用途 | 保護ルール |
+| --- | --- | --- |
+| `Development_ReadOnly` | dev の plan 用 | なし |
+| `Development` | dev の deploy 用 | Required reviewers |
+| `Production_ReadOnly` | prd の plan 用 | なし |
+| `Production` | prd の deploy 用 | Required reviewers |
 
-`dev-ssm-deploy.yml`、`prd-ssm-deploy.yml`、`common-ssm-test.yml` は、それぞれの environment 内の `vars.AWS_ROLE` を参照します。
-
-想定する運用は以下です。
-
-- `dev`, `prd`
-  保護なし。plan 実行用
-- `dev-review`, `prd-review`
-  required reviewers あり。deploy 実行用
+承認ゲートは `Development` / `Production` の Required reviewers で実現しています。
+`*_ReadOnly` に保護ルールを付けないのは、plan で承認を求めず内容を先に見せるためです。
 
 ### Variables
 
-必要な設定は以下です。
+environment ごとに以下を設定します。いずれも OIDC で AssumeRole する IAM Role ARN です。
 
-- Environment variable: `AWS_ROLE`
-  各 environment ごとに設定する、OIDC で AssumeRole する IAM Role ARN
+| 変数 | 参照するワークフロー |
+| --- | --- |
+| `ASSUME_ROLE_ARN_CICD` | `dev-ssm-deploy` / `prd-ssm-deploy` / automation 系 |
+| `ASSUME_ROLE_ARN_OPERATION` | `common-ssm-test` / `common-ssm-batch-test` |
 
 ### AWS Side Requirements
 
@@ -191,6 +220,9 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 - 対象 role に必要な SSM 権限が付与されていること
   - plan 用: `ssm:DescribeDocument`, `ssm:GetDocument`
   - deploy 用: `ssm:CreateDocument`, `ssm:UpdateDocument`, `ssm:UpdateDocumentDefaultVersion`
+- **Resource は `document/<環境名>-cmd-*` / `document/<環境名>-automation-*` に限定されていること。**
+  この制限が [Naming Convention](#naming-convention) の根拠です。規約から外れた名前は
+  `ssm:DescribeDocument` の時点で `AccessDeniedException` になります
 
 ## How To Update A Document
 
@@ -200,13 +232,20 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
    その PR のブランチを選びます。PR 番号の入力は不要です。
 4. plan artifact と Step Summary で反映内容を確認します。
 5. `Development` environment の承認後、`dev` へデプロイされます。
-6. `main` へマージします。
-7. `main` 向け plan を確認し、`main` push 後に `prd` へ反映します。
+6. `main` 向け Pull Request を作成します。
+7. Actions の `prd-ssm-deploy` から Run workflow を実行し、「Use workflow from」で
+   その PR のブランチ（通常は `dev`）を選びます。
+8. plan artifact と Step Summary で反映内容を確認します。
+9. `Production` environment の承認後、`prd` へデプロイされます。
+10. `main` へマージします。
 
 ## Design Decisions
 
 `dev-ssm-deploy` を現在の形にするまでの判断と、その理由の記録です。仕様そのものは上の
 [`dev-ssm-deploy`](#dev-ssm-deploy) の節を参照してください。ここには**なぜそうしたか**だけを書きます。
+
+`prd-ssm-deploy` は `dev-ssm-deploy` と同一のロジックです（環境依存の値だけが異なります）。
+以下の判断はそのまま prd にも当てはまります。
 
 ### なぜ手動実行なのか（[#92](https://github.com/fumi108-lab/ssm/pull/92)）
 
@@ -261,6 +300,28 @@ deploy 時の出来事を後から plan summary の Note 列へ書き込むこ�
 命名の導出は `validate` の `Collect changed documents` の 1 箇所だけで行い、`plan` 以降は
 その結果（`targets_json`）をそのまま使います。チェックした名前と実際にデプロイされる名前が
 必ず一致し、命名規則を変える際の修正箇所も 1 つで済みます。
+
+### なぜ base ブランチを env で持つのか
+
+`prd-ssm-deploy` を `main` / `master` のどちらの構成でも動くようにするためです。
+`gh pr list --base` は値を 1 つしか取れないため、base で絞らずに取得してから
+`env.BASE_BRANCHES`（スペース区切り）で絞り込んでいます。
+
+差分の基準も解決した PR の `baseRefName` から導出しており、`origin/main` のような
+ハードコードはありません。`dev-ssm-deploy` も同じ仕組みに揃えてあります
+（`BASE_BRANCHES: "dev"`。値が 1 つなので挙動は従来と同じです）。
+
+これにより 2 つのワークフローのロジックが完全に一致し、環境依存の差分が `env:` ブロックだけに
+閉じ込められています。将来、再利用可能ワークフロー（`workflow_call`）へまとめる際の下地にもなります。
+
+### なぜ `prd-ssm-deploy-manual` を削除したのか
+
+`prd-ssm-deploy` が手動実行になったことで役割が重複したためです。加えて、削除した
+ワークフローには本番向けとして看過できない不整合がありました。
+
+- plan はドキュメント名を `prd-<name>` で算出するのに、deploy は `<name>` とプレフィックス無しで
+  算出していた。**承認画面に表示される対象と実際の反映先が別物**だった
+- deploy が `plan.tsv` を使わず `DOC_DIR` 配下の**全件**を再走査して本番へ反映していた
 
 ## Commenting Policy
 
