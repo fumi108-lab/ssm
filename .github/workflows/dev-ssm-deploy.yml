@@ -1,12 +1,28 @@
 name: dev-ssm-deploy
 
+# command_documents/healthcheck 配下の JSON を dev 環境の SSM ドキュメントへ反映する。
+#
+# 実行方法:
+#   Actions の Run workflow で「Use workflow from」に対象ブランチを選ぶ。入力欄は無い。
+#   選んだブランチに紐づく base=dev の open PR を逆引きし、その差分だけを反映する。
+#
+# ジョブ構成 (この順に実行される):
+#   validate   … PR の特定・JSON 検証・命名規則チェック。AWS には一切触れない
+#   plan       … 読み取り専用ロールで AWS と差分を取り、反映予定を summary/artifact に出す
+#   deploy-dev … Required reviewers の承認後、plan.tsv に従って反映する
+#
+# 承認ゲートは deploy-dev の environment (Development) にある。
+# validate で落ちれば AWS 認証すら発生しないため、検証は可能な限り validate へ寄せる。
+#
+# 設計判断の経緯は README の Design Decisions を参照。
+
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write # OIDC で IAM Role を AssumeRole するために必要
   contents: read
-  pull-requests: read
+  pull-requests: read # validate の gh pr list に必要。外すと対象 PR を特定できない
 
 # 複数人が別々のドキュメントを同時に編集する運用を想定し、ブランチ (= PR) 単位で
 # 並走させる。同一ブランチの重複実行だけを直列化して二重反映を防ぐ。
@@ -19,20 +35,33 @@ env:
   NAME: dev
   AWS_REGION: ap-northeast-1
   DOC_DIR: command_documents/healthcheck
+  # 対象とする PR の base ブランチ (スペース区切り)。
+  # gh pr list --base は 1 値しか取れないため、取得後に絞り込む方式にしている
+  BASE_BRANCHES: "dev"
+  # SSM ドキュメント名の規約: <NAME>-<DOC_TYPE>-<任意>
+  # IAM ポリシー (development-ssmPlan / development-ssmExec) の Resource が
+  # arn:aws:ssm:<region>:<account>:document/dev-cmd-* に限定されているため、
+  # ここを変更する場合は IAM 側の Resource も合わせて変更すること。
+  DOC_TYPE: cmd
   PLAN_ARTIFACT_NAME: ssm-deploy-plan
-  # JavaScript製 action を Node.js 24 で実行させるための環境変数
+  # JavaScript製 action を Node.js 24 で実行させるための環境変数。
+  # 各 action が Node 24 に対応すれば削除できる暫定設定
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # 反映対象の特定と検証だけを行う。AWS 認証情報を持たないため、
+  # ここで落とせば AWS には一切アクセスしない。検証はできる限りこのジョブへ寄せる。
   validate:
     runs-on: ubuntu-latest
     outputs:
       changed_count: ${{ steps.changed_files.outputs.changed_count }}
-      changed_files_json: ${{ steps.changed_files.outputs.changed_files_json }}
+      targets_json: ${{ steps.changed_files.outputs.targets_json }}
       pr_number: ${{ steps.pr.outputs.pr_number }}
       pr_title: ${{ steps.pr.outputs.pr_title }}
       pr_author: ${{ steps.pr.outputs.pr_author }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
     steps:
+      # base ブランチとの merge-base 算出に履歴が要るため全履歴を取得する
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -47,20 +76,26 @@ jobs:
           set -euo pipefail
 
           # PR 番号の打ち間違いを防ぐため、実行時に選択したブランチから
-          # base=dev の open PR を逆引きして対象を特定する
-          prs="$(gh pr list --head "$BRANCH" --base dev --state open \
-            --json number,title,author,isDraft,headRefOid)"
+          # open PR を逆引きして対象を特定する。
+          # gh pr list --base は 1 値しか受け付けないので、取得後に BASE_BRANCHES で絞る
+          prs="$(gh pr list --head "$BRANCH" --state open \
+            --json number,title,author,isDraft,headRefOid,baseRefName)"
+
+          prs="$(printf '%s' "$prs" | jq -c --arg bases "$BASE_BRANCHES" '
+            ($bases | split(" ")) as $allowed
+            | [ .[] | select(.baseRefName as $b | $allowed | index($b)) ]
+          ')"
           count="$(printf '%s' "$prs" | jq 'length')"
 
           if [ "$count" -eq 0 ]; then
-            echo "Branch '${BRANCH}' has no open pull request based on 'dev'." >&2
-            echo "Select the branch of an open PR targeting 'dev' in 'Use workflow from'." >&2
+            echo "Branch '${BRANCH}' has no open pull request based on: ${BASE_BRANCHES}." >&2
+            echo "Select the branch of such an open PR in 'Use workflow from'." >&2
             exit 1
           fi
 
           if [ "$count" -gt 1 ]; then
-            echo "Branch '${BRANCH}' has multiple open pull requests based on 'dev':" >&2
-            printf '%s' "$prs" | jq -r '.[] | "  #\(.number) \(.title)"' >&2
+            echo "Branch '${BRANCH}' has multiple open pull requests based on: ${BASE_BRANCHES}" >&2
+            printf '%s' "$prs" | jq -r '.[] | "  #\(.number) -> \(.baseRefName)  \(.title)"' >&2
             echo "Cannot determine the deployment target." >&2
             exit 1
           fi
@@ -70,6 +105,7 @@ jobs:
           pr_author="$(printf '%s' "$prs" | jq -r '.[0].author.login')"
           is_draft="$(printf '%s' "$prs" | jq -r '.[0].isDraft')"
           head_oid="$(printf '%s' "$prs" | jq -r '.[0].headRefOid')"
+          base_ref="$(printf '%s' "$prs" | jq -r '.[0].baseRefName')"
 
           # 作業途中の PR は反映しない
           if [ "$is_draft" = "true" ]; then
@@ -85,11 +121,12 @@ jobs:
           fi
 
           echo "PR #${pr_number} ${pr_title} (@${pr_author})"
-          echo "Branch: ${BRANCH}  Commit: ${RUN_SHA}"
+          echo "Branch: ${BRANCH} -> ${base_ref}  Commit: ${RUN_SHA}"
 
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "pr_title=$pr_title" >> "$GITHUB_OUTPUT"
           echo "pr_author=$pr_author" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
 
       - name: UTF-8 check
         run: |
@@ -111,28 +148,79 @@ jobs:
 
       - name: Collect changed documents
         id: changed_files
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           set -euo pipefail
-          # base ブランチが PR 作成後に進んでいても無関係な差分を拾わないよう merge-base を基準にする
-          base_sha="$(git merge-base origin/dev HEAD)"
+          # base ブランチが PR 作成後に進んでいても無関係な差分を拾わないよう merge-base を基準にする。
+          # base は PR から導出しているので、main / master のどちらでもそのまま動く
+          base_sha="$(git merge-base "origin/${BASE_REF}" HEAD)"
 
           mapfile -t changed_files < <(
             git diff --name-only "$base_sha" HEAD -- "${DOC_DIR}/*.json"
           )
 
-          changed_json="$(printf '%s\n' "${changed_files[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          # SSM ドキュメント名の導出はここだけで行い、以降のジョブは targets_json を
+          # そのまま使う。命名規則を変えるときに直すのはこの 1 箇所で済み、
+          # validate でチェックした名前と実際にデプロイされる名前が必ず一致する。
+          targets_json="$(
+            printf '%s\n' "${changed_files[@]}" \
+              | jq -R -s -c --arg env_name "$NAME" '
+                  split("\n")
+                  | map(select(length > 0))
+                  | map({
+                      file: .,
+                      name: ($env_name + "-" + (. | split("/") | last | sub("\\.[^.]*$"; "")))
+                    })
+                '
+          )"
 
           echo "changed_count=${#changed_files[@]}" >> "$GITHUB_OUTPUT"
-          echo "changed_files_json=$changed_json" >> "$GITHUB_OUTPUT"
+          echo "targets_json=$targets_json" >> "$GITHUB_OUTPUT"
 
+      - name: Check document naming convention
+        env:
+          TARGETS_JSON: ${{ steps.changed_files.outputs.targets_json }}
+        run: |
+          set -euo pipefail
+
+          # 規約から外れた名前は plan の describe-document が IAM の Resource 条件に
+          # 弾かれて AccessDenied になる。AWS に触る前のこの段階で、原因が分かる形で止める。
+          # 既存ドキュメントには規約以前の名前が残っているため、対象は変更ファイルのみ。
+          expected="^${NAME}-${DOC_TYPE}-[A-Za-z0-9._-]+$"
+          invalid=0
+
+          while IFS=$'\t' read -r file_path name; do
+            [ -n "$file_path" ] || continue
+
+            if printf '%s' "$name" | grep -Eq "$expected"; then
+              echo "OK: $file_path -> $name"
+              continue
+            fi
+
+            echo "::error file=${file_path}::SSM document name '${name}' does not match '${NAME}-${DOC_TYPE}-*'. Rename the file to '${DOC_TYPE}-<name>.json'."
+            invalid=$((invalid + 1))
+          done < <(printf '%s' "$TARGETS_JSON" | jq -r '.[] | "\(.file)\t\(.name)"')
+
+          if [ "$invalid" -ne 0 ]; then
+            echo "${invalid} document(s) violate the naming convention '${NAME}-${DOC_TYPE}-*'." >&2
+            exit 1
+          fi
+
+  # 読み取り専用ロールで AWS 上の現在の内容と比較し、反映予定を承認者へ提示する。
+  # ここでは書き込みを一切行わない。
   plan:
     needs: validate
     runs-on: ubuntu-latest
     environment:
+      # 保護ルール無し。読み取り専用の IAM Role を紐付けるためだけに指定している
       name: Development_ReadOnly
     outputs:
       actionable_count: ${{ steps.build_plan.outputs.actionable_count }}
     steps:
+      # ref の指定は必須。省略すると github.ref ではなくデフォルトブランチの内容を
+      # 反映してしまう。github.sha は run 全体で固定なので、承認待ちの間にブランチが
+      # 進んでも plan と deploy-dev が同じコミットを見ることが保証される。
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -151,7 +239,7 @@ jobs:
       - name: Build deployment plan
         id: build_plan
         env:
-          CHANGED_FILES_JSON: ${{ needs.validate.outputs.changed_files_json }}
+          TARGETS_JSON: ${{ needs.validate.outputs.targets_json }}
           PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
           # PR タイトルはユーザー入力のため、式展開ではなく環境変数経由で渡す
           PR_TITLE: ${{ needs.validate.outputs.pr_title }}
@@ -179,13 +267,9 @@ jobs:
 
           actionable_count=0
 
-          while IFS= read -r f; do
+          while IFS=$'\t' read -r f name; do
             [ -n "$f" ] || continue
 
-            # ファイル名抽出
-            base="$(basename "$f")"
-            # ***.sh.jsonから***.shを切り出して先頭に環境名を付与
-            name="${{ env.NAME }}-${base%.*}"
             action="skip"
 
             # リポジトリから削除されたドキュメントは自動削除せず、
@@ -219,7 +303,7 @@ jobs:
             fi
 
             printf '%s\t%s\t%s\n' "$action" "$name" "$f" >> plan/plan.tsv
-          done < <(printf '%s' "$CHANGED_FILES_JSON" | jq -r '.[]')
+          done < <(printf '%s' "$TARGETS_JSON" | jq -r '.[] | "\(.file)\t\(.name)"')
 
           {
             echo ""
@@ -241,13 +325,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # 承認ゲートの後段。plan.tsv に書かれたとおりに反映するだけで、
+  # 何を反映するかの判断はしない (判断は plan ジョブが済ませている)。
   deploy-dev:
+    # 反映対象が無いときは承認を求めない
     if: ${{ needs.plan.outputs.actionable_count != '0' }}
     needs: [validate, plan]
     runs-on: ubuntu-latest
     environment:
+      # Required reviewers を設定済み。ここでジョブが停止し、承認されるまで進まない
       name: Development
     steps:
+      # plan ジョブと同じコミットを見る必要がある (理由は plan 側のコメントを参照)
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
