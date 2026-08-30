@@ -4,7 +4,7 @@
   "parameters": {
     "arg": {
       "type": "String",
-      "description": "チェック対象のサービス名 / Name of the service to check 20260830-2"
+      "description": "チェック対象のサービス名 / Name of the service to check 2"
     }
   },
   "mainSteps": [
@@ -14,7 +14,7 @@
       "inputs": {
         "runCommand": [
           "#!/bin/bash",
-          "echo ver2",
+          "echo ver3",
           "",
           "arg={{ arg }}",
           "SUMMARY=\"\"",
