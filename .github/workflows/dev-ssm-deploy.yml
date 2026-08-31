@@ -28,7 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # ジョブ ID は Actions 画面で "<ここ> / validate" のように再利用側のジョブ名の前に出る。
+  # 環境名にしておくと、他のデプロイワークフローと並んだときに見分けやすい。
+  dev:
     uses: ./.github/workflows/ssm-deploy.yml
     # environment スコープの vars と GITHUB_TOKEN を再利用側へ引き継ぐ
     secrets: inherit
