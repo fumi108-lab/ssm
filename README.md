@@ -9,6 +9,7 @@
 .
 ├── .github/workflows/
 │   ├── ssm-deploy.yml                  # 再利用可能ワークフロー (デプロイ処理の実体)
+│   │                                   #   Actions では "ssm-deploy (reusable)" と表示される
 │   ├── dev-ssm-cmd-deploy.yml          # ↓ 4 本は ssm-deploy.yml を呼び出すラッパー
 │   ├── prd-ssm-cmd-deploy.yml
 │   ├── dev-ssm-automation-deploy.yml
@@ -88,6 +89,11 @@ Actions 画面のジョブ名は `<呼び出し側のジョブ ID> / <再利用�
 
 `uses: ./.github/workflows/ssm-deploy.yml` のローカルパス形式は**呼び出し側と同じコミットの定義**を
 使うため、「選択した ref の定義で実行される」という性質はそのまま保たれます。
+
+`ssm-deploy.yml` は Actions のサイドバーに `ssm-deploy (reusable)` として並びますが、
+`workflow_dispatch` を持たないため **Run workflow ボタンは出ず、直接実行はできません**。
+呼び出された側の run は呼び出し側のワークフローに集約されるため、ここに run が積まれることもありません。
+（GitHub には再利用専用ワークフローを一覧から隠す設定がないため、名前で区別しています。）
 
 ### `dev-ssm-cmd-deploy`
 
