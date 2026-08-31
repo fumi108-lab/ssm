@@ -1,4 +1,4 @@
-name: dev-ssm-deploy
+name: dev-ssm-cmd-deploy
 
 # command_documents/healthcheck/*.json を dev 環境の SSM Command ドキュメントへ反映する。
 #
@@ -24,7 +24,7 @@ permissions:
 # 並走させる。同一ブランチの重複実行だけを直列化して二重反映を防ぐ。
 # 同じドキュメントが競合した場合は後にデプロイされた内容が有効になる (後勝ち)。
 concurrency:
-  group: dev-ssm-deploy-${{ github.ref }}
+  group: dev-ssm-cmd-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
       base_branches: "dev"
       ssm_document_type: Command
       ssm_document_format: JSON
-      plan_artifact_name: ssm-deploy-plan
-      plan_title: SSM Deploy Plan
+      plan_artifact_name: ssm-cmd-deploy-plan
+      plan_title: SSM Command Deploy Plan
       environment_plan: Development_ReadOnly
       environment_deploy: Development
