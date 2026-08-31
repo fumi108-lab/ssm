@@ -8,10 +8,11 @@
 ```text
 .
 ├── .github/workflows/
+│   ├── ssm-deploy.yml                  # 再利用可能ワークフロー (処理の実体)
 │   ├── common-ssm-batch-test.yml
 │   ├── common-ssm-test.yml
 │   ├── dev-ssm-automation-deploy.yml
-│   ├── dev-ssm-deploy.yml
+│   ├── dev-ssm-deploy.yml              # ssm-deploy.yml の呼び出し側
 │   ├── prd-ssm-automation-deploy.yml
 │   └── prd-ssm-deploy.yml
 ├── automation_documents/healthcheck/
@@ -58,6 +59,37 @@ Annotations 付きで停止します。既存のドキュメントには規約�
 未適合が残っているのは `command_documents/healthcheck` 配下です。）
 
 ## Workflows
+
+### 構成
+
+デプロイ系ワークフローの処理は `.github/workflows/ssm-deploy.yml`（`on: workflow_call` の
+再利用可能ワークフロー）に 1 本化しています。各ワークフローは実行方法と環境固有の値だけを
+定義する薄いラッパーです。
+
+| パラメータ | dev-ssm-deploy | prd-ssm-deploy | dev-ssm-automation-deploy | prd-ssm-automation-deploy |
+| --- | --- | --- | --- | --- |
+| `env_name` | `dev` | `prd` | `dev` | `prd` |
+| `doc_dir` | `command_documents/healthcheck` | 同左 | `automation_documents/healthcheck` | 同左 |
+| `doc_ext` | `json` | `json` | `yaml` | `yaml` |
+| `doc_type` | `cmd` | `cmd` | `automation` | `automation` |
+| `base_branches` | `dev` | `main master` | `dev` | `main master` |
+| `ssm_document_type` | `Command` | `Command` | `Automation` | `Automation` |
+| `ssm_document_format` | `JSON` | `JSON` | `YAML` | `YAML` |
+| `environment_plan` | `Development_ReadOnly` | `Production_ReadOnly` | `Development_ReadOnly` | `Production_ReadOnly` |
+| `environment_deploy` | `Development` | `Production` | `Development` | `Production` |
+
+`concurrency` と `permissions` は呼び出し側で宣言します。呼び出し側の `permissions` が
+`ssm-deploy.yml` にも適用され、再利用側では制限しかできないためです。
+
+Actions 画面のジョブ名は `<呼び出し側のジョブ ID> / <再利用側のジョブ名>` の形式になります。
+呼び出し側のジョブ ID は環境が分かる名前（`dev` / `prd` など）にしておくと、
+`dev / validate` のように表示され、他のデプロイワークフローと並んだときに見分けやすくなります。
+
+`uses: ./.github/workflows/ssm-deploy.yml` のローカルパス形式は**呼び出し側と同じコミットの定義**を
+使うため、「選択した ref の定義で実行される」という性質はそのまま保たれます。
+
+> **移行中**: 現在 `ssm-deploy.yml` を呼び出しているのは `dev-ssm-deploy` のみです。
+> 実行確認が取れ次第、残り 3 本も切り替えます。
 
 ### `dev-ssm-deploy`
 
@@ -193,8 +225,8 @@ command 系との違いは以下だけです。
 | `DOC_EXT` | `json` | `yaml` |
 | `DOC_TYPE` | `cmd` | `automation` |
 | ドキュメント名 | `<環境名>-cmd-*` | `<環境名>-automation-*` |
-| 構文チェック | `jq -e .` | Python の `yaml` で解析し、`schemaVersion` / `mainSteps` の存在も検査 |
-| 差分比較 | ローカル JSON をそのまま正規化 | ローカル YAML を JSON へ変換して正規化。AWS 側も `--document-format JSON` で取得 |
+| 構文チェック | 共通（`yaml.safe_load` は JSON も読めるため 1 本化） | 同左 |
+| 差分比較 | 共通（ローカルを JSON へ正規化し、AWS 側も `--document-format JSON` で取得） | 同左 |
 | SSM への登録 | `--document-type Command --document-format JSON` | `--document-type Automation --document-format YAML` |
 | plan artifact 名 | `ssm-deploy-plan` | `automation-deploy-plan` |
 
@@ -351,6 +383,29 @@ deploy 時の出来事を後から plan summary の Note 列へ書き込むこ�
 - plan はドキュメント名を `prd-<name>` で算出するのに、deploy は `<name>` とプレフィックス無しで
   算出していた。**承認画面に表示される対象と実際の反映先が別物**だった
 - deploy が `plan.tsv` を使わず `DOC_DIR` 配下の**全件**を再走査して本番へ反映していた
+
+### なぜ workflow_call で共通化したのか（[#125](https://github.com/fumi108-lab/ssm/pull/125) の反省）
+
+デプロイ系 4 本は同一ロジックでしたが、コピー元とコピー先が別々に育った結果、
+`prd-ssm-deploy` には以下の乖離が溜まっていました。**いずれも本番向けのワークフローです。**
+
+- `deploy-prd` が `plan.tsv` を使わず再走査していた（承認画面で見た内容と実際の反映が別物）
+- summary の見出しが `prd_` / `prd___`
+- `Render __ENV__ placeholder` の欠落
+- 削除した `prd-ssm-deploy-manual` は plan と deploy でドキュメント名が食い違っていた
+
+#125 / #128 で 4 本を揃えましたが、**次に 1 本だけ直せば同じことが再発します**。
+処理を `ssm-deploy.yml` に 1 本化し、構造的に防ぐことにしました。
+
+共通化にあたり JSON / YAML の条件分岐が必要かを調べましたが、**不要でした**。
+
+- `yaml.safe_load` は JSON も読める（JSON は YAML のサブセット）
+- 管理対象の全ドキュメントに `schemaVersion` / `mainSteps` が存在する
+
+そのため構文チェックと正規化を 1 本化でき、`if:` による分岐はありません。副次的に、
+command 系にも automation 側の必須フィールド検査が入るようになりました。
+
+**却下した案**: 4 本を揃えたまま維持する。乖離が実際に起きた実績があるため見送りました。
 
 ## Commenting Policy
 
