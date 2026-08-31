@@ -8,13 +8,13 @@
 ```text
 .
 ├── .github/workflows/
-│   ├── ssm-deploy.yml                  # 再利用可能ワークフロー (処理の実体)
-│   ├── common-ssm-batch-test.yml
-│   ├── common-ssm-test.yml
+│   ├── ssm-deploy.yml                  # 再利用可能ワークフロー (デプロイ処理の実体)
+│   ├── dev-ssm-cmd-deploy.yml          # ↓ 4 本は ssm-deploy.yml を呼び出すラッパー
+│   ├── prd-ssm-cmd-deploy.yml
 │   ├── dev-ssm-automation-deploy.yml
-│   ├── dev-ssm-deploy.yml              # ssm-deploy.yml の呼び出し側
 │   ├── prd-ssm-automation-deploy.yml
-│   └── prd-ssm-deploy.yml
+│   ├── common-ssm-batch-test.yml
+│   └── common-ssm-test.yml
 ├── automation_documents/healthcheck/
 │   └── automation-*.yaml
 └── command_documents/healthcheck/
@@ -66,7 +66,7 @@ Annotations 付きで停止します。既存のドキュメントには規約�
 再利用可能ワークフロー）に 1 本化しています。各ワークフローは実行方法と環境固有の値だけを
 定義する薄いラッパーです。
 
-| パラメータ | dev-ssm-deploy | prd-ssm-deploy | dev-ssm-automation-deploy | prd-ssm-automation-deploy |
+| パラメータ | dev-ssm-cmd-deploy | prd-ssm-cmd-deploy | dev-ssm-automation-deploy | prd-ssm-automation-deploy |
 | --- | --- | --- | --- | --- |
 | `env_name` | `dev` | `prd` | `dev` | `prd` |
 | `doc_dir` | `command_documents/healthcheck` | 同左 | `automation_documents/healthcheck` | 同左 |
@@ -75,6 +75,7 @@ Annotations 付きで停止します。既存のドキュメントには規約�
 | `base_branches` | `dev` | `main master` | `dev` | `main master` |
 | `ssm_document_type` | `Command` | `Command` | `Automation` | `Automation` |
 | `ssm_document_format` | `JSON` | `JSON` | `YAML` | `YAML` |
+| `plan_artifact_name` | `ssm-cmd-deploy-plan` | 同左 | `ssm-automation-deploy-plan` | 同左 |
 | `environment_plan` | `Development_ReadOnly` | `Production_ReadOnly` | `Development_ReadOnly` | `Production_ReadOnly` |
 | `environment_deploy` | `Development` | `Production` | `Development` | `Production` |
 
@@ -88,13 +89,10 @@ Actions 画面のジョブ名は `<呼び出し側のジョブ ID> / <再利用�
 `uses: ./.github/workflows/ssm-deploy.yml` のローカルパス形式は**呼び出し側と同じコミットの定義**を
 使うため、「選択した ref の定義で実行される」という性質はそのまま保たれます。
 
-> **移行中**: 現在 `ssm-deploy.yml` を呼び出しているのは `dev-ssm-deploy` のみです。
-> 実行確認が取れ次第、残り 3 本も切り替えます。
-
-### `dev-ssm-deploy`
+### `dev-ssm-cmd-deploy`
 
 `command_documents/healthcheck/*.json` を dev 環境の SSM ドキュメントへ反映する、手動実行のワークフローです。
-以降の 3 本（`prd-ssm-deploy` と automation 系 2 本）も同じロジックのため、仕様はここにまとめて記載します。
+以降の 3 本（`prd-ssm-cmd-deploy` と automation 系 2 本）も同じロジックのため、仕様はここにまとめて記載します。
 
 **トリガーと実行方法**
 
@@ -133,7 +131,7 @@ Actions 画面のジョブ名は `<呼び出し側のジョブ ID> / <再利用�
 
 **同時実行と競合時の挙動**
 
-`concurrency` グループは `dev-ssm-deploy-${{ github.ref }}` で、**ブランチ (= PR) 単位で並走**します。
+`concurrency` グループは `dev-ssm-cmd-deploy-${{ github.ref }}` で、**ブランチ (= PR) 単位で並走**します。
 
 - 異なるブランチの run は並走します。
 - 同一ブランチを続けて実行した場合、2 本目はキューで待機します（`cancel-in-progress: false`）。
@@ -163,10 +161,10 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 デプロイ結果は必ず Deploy Result 側を参照してください。途中で失敗した場合も、そこまでに
 処理されたドキュメントは Deploy Result に記録されます。
 
-### `prd-ssm-deploy`
+### `prd-ssm-cmd-deploy`
 
 `command_documents/healthcheck/*.json` を prd 環境の SSM ドキュメントへ反映する、手動実行のワークフローです。
-`dev-ssm-deploy` と**同じ設計・同じロジック**で、環境依存の値（`NAME` / `BASE_BRANCHES` / environment 名）
+`dev-ssm-cmd-deploy` と**同じ設計・同じロジック**で、環境依存の値（`NAME` / `BASE_BRANCHES` / environment 名）
 だけが異なります。
 
 **トリガーと実行方法**
@@ -179,7 +177,7 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 
 **停止条件**
 
-`dev-ssm-deploy` と同じです。いずれも `validate` ジョブで検知し、AWS に接続する前に停止します。
+`dev-ssm-cmd-deploy` と同じです。いずれも `validate` ジョブで検知し、AWS に接続する前に停止します。
 
 - 選んだブランチに base が `main` / `master` の open PR が存在しない
 - 該当する open PR が複数ある（対象を特定できない）
@@ -208,14 +206,14 @@ plan summary は deploy の実行前に生成されるため、その Note 列�
 
 **同時実行と競合時の挙動 / 実行結果の確認**
 
-`concurrency` グループが `prd-ssm-deploy-${{ github.ref }}` である点を除き、
-[`dev-ssm-deploy`](#dev-ssm-deploy) と同じです。Deploy Result テーブルも同様に出力されます。
+`concurrency` グループが `prd-ssm-cmd-deploy-${{ github.ref }}` である点を除き、
+[`dev-ssm-cmd-deploy`](#dev-ssm-cmd-deploy) と同じです。Deploy Result テーブルも同様に出力されます。
 
 ### `dev-ssm-automation-deploy` / `prd-ssm-automation-deploy`
 
 `automation_documents/healthcheck/*.yaml` を SSM **Automation** ドキュメントとして反映します。
 トリガー・停止条件・処理の流れ・同時実行と競合時の挙動・Deploy Result は
-[`dev-ssm-deploy`](#dev-ssm-deploy) と**まったく同じ**です（環境依存の値以外、ロジックは同一）。
+[`dev-ssm-cmd-deploy`](#dev-ssm-cmd-deploy) と**まったく同じ**です（環境依存の値以外、ロジックは同一）。
 
 command 系との違いは以下だけです。
 
@@ -228,7 +226,7 @@ command 系との違いは以下だけです。
 | 構文チェック | 共通（`yaml.safe_load` は JSON も読めるため 1 本化） | 同左 |
 | 差分比較 | 共通（ローカルを JSON へ正規化し、AWS 側も `--document-format JSON` で取得） | 同左 |
 | SSM への登録 | `--document-type Command --document-format JSON` | `--document-type Automation --document-format YAML` |
-| plan artifact 名 | `ssm-deploy-plan` | `automation-deploy-plan` |
+| plan artifact 名 | `ssm-cmd-deploy-plan` | `ssm-automation-deploy-plan` |
 
 使用する environment は command 系と同じ（`Development_ReadOnly` / `Development` /
 `Production_ReadOnly` / `Production`）です。`concurrency` グループは
@@ -269,7 +267,7 @@ environment ごとに以下を設定します。いずれも OIDC で AssumeRole
 
 | 変数 | 参照するワークフロー |
 | --- | --- |
-| `ASSUME_ROLE_ARN_CICD` | `dev-ssm-deploy` / `prd-ssm-deploy` / automation 系 |
+| `ASSUME_ROLE_ARN_CICD` | `dev-ssm-cmd-deploy` / `prd-ssm-cmd-deploy` / automation 系 |
 | `ASSUME_ROLE_ARN_OPERATION` | `common-ssm-test` / `common-ssm-batch-test` |
 
 ### AWS Side Requirements
@@ -286,12 +284,12 @@ environment ごとに以下を設定します。いずれも OIDC で AssumeRole
 
 1. `command_documents/healthcheck` 配下の JSON を追加または更新します。
 2. `dev` 向け Pull Request を作成します (draft のままでは実行できません)。
-3. Actions の `dev-ssm-deploy` から Run workflow を実行し、「Use workflow from」で
+3. Actions の `dev-ssm-cmd-deploy` から Run workflow を実行し、「Use workflow from」で
    その PR のブランチを選びます。PR 番号の入力は不要です。
 4. plan artifact と Step Summary で反映内容を確認します。
 5. `Development` environment の承認後、`dev` へデプロイされます。
 6. `main` 向け Pull Request を作成します。
-7. Actions の `prd-ssm-deploy` から Run workflow を実行し、「Use workflow from」で
+7. Actions の `prd-ssm-cmd-deploy` から Run workflow を実行し、「Use workflow from」で
    その PR のブランチ（通常は `dev`）を選びます。
 8. plan artifact と Step Summary で反映内容を確認します。
 9. `Production` environment の承認後、`prd` へデプロイされます。
@@ -302,10 +300,10 @@ Automation ドキュメント（`automation_documents/healthcheck/*.yaml`）の�
 
 ## Design Decisions
 
-`dev-ssm-deploy` を現在の形にするまでの判断と、その理由の記録です。仕様そのものは上の
-[`dev-ssm-deploy`](#dev-ssm-deploy) の節を参照してください。ここには**なぜそうしたか**だけを書きます。
+`dev-ssm-cmd-deploy` を現在の形にするまでの判断と、その理由の記録です。仕様そのものは上の
+[`dev-ssm-cmd-deploy`](#dev-ssm-cmd-deploy) の節を参照してください。ここには**なぜそうしたか**だけを書きます。
 
-`prd-ssm-deploy` は `dev-ssm-deploy` と同一のロジックです（環境依存の値だけが異なります）。
+`prd-ssm-cmd-deploy` は `dev-ssm-cmd-deploy` と同一のロジックです（環境依存の値だけが異なります）。
 以下の判断はそのまま prd にも当てはまります。
 
 ### なぜ手動実行なのか（[#92](https://github.com/fumi108-lab/ssm/pull/92)）
@@ -323,7 +321,7 @@ Automation ドキュメント（`automation_documents/healthcheck/*.yaml`）の�
 
 ### なぜ concurrency がブランチ単位なのか（[#100](https://github.com/fumi108-lab/ssm/pull/100) → [#107](https://github.com/fumi108-lab/ssm/pull/107)）
 
-最初は全 run を直列化していました（`group: dev-ssm-deploy`）。`deploy-dev` は承認待ちで長時間
+最初は全 run を 1 つのグループで直列化していました。deploy ジョブは承認待ちで長時間
 停止するため、この粒度では**承認待ちの run が他の全員をブロック**してしまいます。
 複数人が別々のドキュメントを同時に編集する運用を想定し、ブランチ単位へ緩めました。
 
@@ -349,9 +347,9 @@ dev 環境であり、どちらの内容が正かは Git 側で PR がマージ�
 
 ### なぜ Deploy Result を別テーブルにしたのか（[#114](https://github.com/fumi108-lab/ssm/pull/114)）
 
-plan summary は `plan` ジョブが `deploy-dev` の**実行前**に生成するため、フォールバックのような
+plan summary は `plan` ジョブが deploy ジョブの**実行前**に生成するため、フォールバックのような
 deploy 時の出来事を後から plan summary の Note 列へ書き込むことは構造上できません。
-そのため `deploy-dev` から独立したテーブルを出力しています。
+そのため deploy ジョブから独立したテーブルを出力しています。
 
 ### なぜ命名チェックが変更ファイルのみなのか（[#122](https://github.com/fumi108-lab/ssm/pull/122)）
 
@@ -364,12 +362,12 @@ deploy 時の出来事を後から plan summary の Note 列へ書き込むこ�
 
 ### なぜ base ブランチを env で持つのか
 
-`prd-ssm-deploy` を `main` / `master` のどちらの構成でも動くようにするためです。
+`prd-ssm-cmd-deploy` を `main` / `master` のどちらの構成でも動くようにするためです。
 `gh pr list --base` は値を 1 つしか取れないため、base で絞らずに取得してから
 `env.BASE_BRANCHES`（スペース区切り）で絞り込んでいます。
 
 差分の基準も解決した PR の `baseRefName` から導出しており、`origin/main` のような
-ハードコードはありません。`dev-ssm-deploy` も同じ仕組みに揃えてあります
+ハードコードはありません。`dev-ssm-cmd-deploy` も同じ仕組みに揃えてあります
 （`BASE_BRANCHES: "dev"`。値が 1 つなので挙動は従来と同じです）。
 
 これにより 2 つのワークフローのロジックが完全に一致し、環境依存の差分が `env:` ブロックだけに
@@ -377,7 +375,7 @@ deploy 時の出来事を後から plan summary の Note 列へ書き込むこ�
 
 ### なぜ `prd-ssm-deploy-manual` を削除したのか
 
-`prd-ssm-deploy` が手動実行になったことで役割が重複したためです。加えて、削除した
+`prd-ssm-cmd-deploy` が手動実行になったことで役割が重複したためです。加えて、削除した
 ワークフローには本番向けとして看過できない不整合がありました。
 
 - plan はドキュメント名を `prd-<name>` で算出するのに、deploy は `<name>` とプレフィックス無しで
@@ -387,7 +385,7 @@ deploy 時の出来事を後から plan summary の Note 列へ書き込むこ�
 ### なぜ workflow_call で共通化したのか（[#125](https://github.com/fumi108-lab/ssm/pull/125) の反省）
 
 デプロイ系 4 本は同一ロジックでしたが、コピー元とコピー先が別々に育った結果、
-`prd-ssm-deploy` には以下の乖離が溜まっていました。**いずれも本番向けのワークフローです。**
+`prd-ssm-cmd-deploy` には以下の乖離が溜まっていました。**いずれも本番向けのワークフローです。**
 
 - `deploy-prd` が `plan.tsv` を使わず再走査していた（承認画面で見た内容と実際の反映が別物）
 - summary の見出しが `prd_` / `prd___`
