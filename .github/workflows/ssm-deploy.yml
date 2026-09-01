@@ -1,6 +1,7 @@
 # Actions のサイドバーには name の値が表示される。GitHub には再利用専用ワークフローを
-# 一覧から隠す設定が無いため、名前で「直接実行するものではない」と分かるようにしている。
-name: ssm-deploy (共通処理 / 直接実行しない)
+# 一覧から隠す設定が無いため、名前で区別できるようにしている。
+# reusable は GitHub の公式用語 (reusable workflow) をそのまま使っている。
+name: ssm-deploy (reusable)
 
 # SSM ドキュメント (Command / Automation) を 1 つの環境へ反映する再利用可能ワークフロー。
 # 直接は実行できない (workflow_dispatch が無いため Run workflow ボタンも出ない)。
