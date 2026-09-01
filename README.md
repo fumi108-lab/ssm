@@ -9,6 +9,7 @@
 .
 ├── .github/workflows/
 │   ├── ssm-deploy.yml                  # 再利用可能ワークフロー (デプロイ処理の実体)
+│   │                                   #   Actions では "ssm-deploy (reusable)" と表示される
 │   ├── dev-ssm-cmd-deploy.yml          # ↓ 4 本は ssm-deploy.yml を呼び出すラッパー
 │   ├── prd-ssm-cmd-deploy.yml
 │   ├── dev-ssm-automation-deploy.yml
@@ -88,6 +89,22 @@ Actions 画面のジョブ名は `<呼び出し側のジョブ ID> / <再利用�
 
 `uses: ./.github/workflows/ssm-deploy.yml` のローカルパス形式は**呼び出し側と同じコミットの定義**を
 使うため、「選択した ref の定義で実行される」という性質はそのまま保たれます。
+
+#### 「reusable」とは
+
+**reusable workflow（再利用可能ワークフロー）** は GitHub の公式用語です。`on: workflow_call` を
+持つワークフローで、他のワークフローから `uses:` で呼び出して処理を共有します。関数のようなもので、
+`inputs` を受け取って動きます。
+
+`ssm-deploy.yml` は Actions のサイドバーに **`ssm-deploy (reusable)`** として並びます。
+GitHub には再利用専用ワークフローを一覧から隠す設定がないため、名前で区別しています
+（`.github/workflows/` 配下に置くことも必須なので、別ディレクトリへ移動することもできません）。
+
+一覧に出ていても、以下のとおり実害はありません。
+
+- **直接実行できません。** `workflow_dispatch` を持たないため Run workflow ボタンが出ません。
+- **run が積まれません。** 呼び出された側の run は呼び出し側のワークフローに集約されます。
+  つまり実行履歴は `dev-ssm-cmd-deploy` などの側に記録されます。
 
 ### `dev-ssm-cmd-deploy`
 
