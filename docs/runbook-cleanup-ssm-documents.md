@@ -117,7 +117,7 @@ grep -v '^$' /tmp/ssm-docs-to-delete.txt \
 ## 4. 削除リストの確認
 
 ```bash
-cat tmp/ssm-delete-commands.sh
+cat /tmp/ssm-delete-commands.sh
 ```
 
 ## 5. ドキュメントの削除
