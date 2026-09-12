@@ -435,6 +435,8 @@ command 系にも automation 側の必須フィールド検査が入るように
 
 ## Notes
 
-- deploy workflow は削除された JSON を AWS から削除しません。
+- deploy workflow は削除された JSON / YAML を AWS から削除しません。plan の summary に `deleted` 行として
+  表示されるだけです。AWS 側の棚卸しと削除は
+  [docs/runbook-cleanup-ssm-documents.md](docs/runbook-cleanup-ssm-documents.md) の手順で手作業で行います。
 - `templates` 配下は deploy 対象ではありません。
 - plan ではローカル JSON と AWS 上の document content を正規化して比較しています。
