@@ -28,7 +28,7 @@ AWS 上に残り続けます。この手順で棚卸しし、不要なものを�
 以降のコマンドは `--region ap-northeast-1` を明示しています。プロファイルを使う場合は
 `--profile <name>` を各コマンドに追加してください。
 
-## 1. カスタムドキュメントを全件表示する
+## 1. カスタムドキュメントを全件表示する(履歴確認)
 
 `--filters Key=Owner,Values=Self` で、AWS 提供のドキュメント（`AWS-RunShellScript` など）を除外します。
 
@@ -106,100 +106,25 @@ dev-test9
 **必ずこの一覧を目視で確認してください。** `cmd-` / `automation-` のものが混ざっていたら、
 フィルタが期待どおり動いていません。削除に進まないでください。
 
-### 環境を限定したい場合
-
-dev だけ掃除する、prd には触らない、といった場合は `grep '^dev-'` を挟みます。
+## 3. 削除リストからコマンドを生成
 
 ```bash
-aws ssm list-documents \
-  --region ap-northeast-1 \
-  --filters Key=Owner,Values=Self \
-  --query 'DocumentIdentifiers[].Name' \
-  --output text | tr '\t' '\n' \
-  | grep '^dev-' \
-  | grep -vE '^dev-(cmd|automation)-' \
-  | sort > /tmp/ssm-docs-to-delete.txt
+grep -v '^$' /tmp/ssm-docs-to-delete.txt \
+  | xargs -I{} echo "aws ssm delete-document --region ap-northeast-1 --name '{}'" \
+  > /tmp/ssm-delete-commands.sh
 ```
 
-### 参考: `--query` だけで絞る書き方（非推奨）
-
-JMESPath の `contains` でも絞れますが、**`cmd-` だけを条件にすると Automation ドキュメントが
-巻き込まれます**。使う場合は `automation-` も除外条件に入れてください。
+## 4. 削除リストの確認
 
 ```bash
-# NG: dev-automation-* が削除候補に入ってしまう
---query "DocumentIdentifiers[?!contains(Name, 'cmd-')].Name"
-
-# OK: 両方を残す
---query "DocumentIdentifiers[?!contains(Name, '-cmd-') && !contains(Name, '-automation-')].Name"
+cat /tmp/ssm-delete-commands.sh
 ```
 
-## 3. 一つずつ確認しながら削除する
+## 5. ドキュメントの削除
+4.のコマンドを使用してドキュメントを削除
+1 行ずつコピーして実行
 
-手順 2 で作ったリストを 1 行ずつ読み、`y` を入力したものだけを削除します。
-`N` または空入力（Enter のみ）はスキップです。
-
-**削除は取り消せません。** 迷ったら `N` でスキップし、あとで手順 2 からやり直してください。
-
-```bash
-while IFS= read -r name; do
-  [ -n "$name" ] || continue
-  printf 'delete %s ? [y/N] ' "$name"
-  read -r ans < /dev/tty
-  if [ "$ans" = "y" ]; then
-    aws ssm delete-document --region ap-northeast-1 --name "$name" && echo "  deleted: $name"
-  else
-    echo "  skipped: $name"
-  fi
-done < /tmp/ssm-docs-to-delete.txt
-```
-
-- `read -r ans < /dev/tty` としているのは、ループの標準入力をリストファイルが占有しているためです。
-  キーボードからの入力を `/dev/tty` 経由で受け取ります
-- `delete-document` は成功時に何も出力しません。`&& echo` で結果を明示しています
-
-出力例:
-
-```
-delete dev-httpd.sh ? [y/N] y
-  deleted: dev-httpd.sh
-delete dev-noarg ? [y/N] y
-  deleted: dev-noarg
-delete dev-sshd.sh ? [y/N] N
-  skipped: dev-sshd.sh
-delete dev-test-20260609.sh ? [y/N] y
-  deleted: dev-test-20260609.sh
-...
-```
-
-### 削除に失敗する場合
-
-実行中のコマンドやアソシエーションが紐づいているドキュメントは削除できません。
-
-```
-An error occurred (InvalidDocumentOperation) when calling the DeleteDocument operation:
-Document dev-httpd.sh is associated with 1 instance(s). Remove all associations before deleting.
-```
-
-その場合は状態を確認し、アソシエーションを先に外してから再実行してください。
-
-```bash
-# 状態の確認
-aws ssm describe-document --region ap-northeast-1 --name dev-httpd.sh \
-  --query 'Document.[Name,Status,DocumentVersion,LatestVersion]' --output table
-
-# アソシエーションの確認
-aws ssm list-associations --region ap-northeast-1 \
-  --association-filter-list key=Name,value=dev-httpd.sh \
-  --query 'Associations[].[AssociationId,Name,Targets]' --output table
-
-# アソシエーションの削除
-aws ssm delete-association --region ap-northeast-1 --association-id <AssociationId>
-```
-
-## 4. 削除後の確認
-
-手順 2 をもう一度実行し、**0 件**になることを確認します。
+## 6. 事後確認
 
 ```bash
 aws ssm list-documents \
@@ -210,8 +135,17 @@ aws ssm list-documents \
   | grep -vE '^(dev|prd)-(cmd|automation)-'
 ```
 
-何も出力されなければ完了です。あわせて手順 1 を実行し、残っているものがすべて
-`<env>-cmd-*` / `<env>-automation-*` であることを目視してください。
+## 7. 事後確認:カスタムドキュメントを全件表示する(履歴確認)
+
+`--filters Key=Owner,Values=Self` で、AWS 提供のドキュメント（`AWS-RunShellScript` など）を除外します。
+
+```bash
+aws ssm list-documents \
+  --region ap-northeast-1 \
+  --filters Key=Owner,Values=Self \
+  --query 'DocumentIdentifiers[].[Name,DocumentType,DocumentFormat,DocumentVersion]' \
+  --output table
+```
 
 ## 補足: リポジトリ側のファイル
 

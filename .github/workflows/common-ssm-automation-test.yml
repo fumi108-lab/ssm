@@ -1,0 +1,235 @@
+name: common-ssm-automation-test
+run-name: "[${{ github.workflow }} #${{ github.run_number }}][${{ github.event.inputs.documentName }}] - ${{ github.event.inputs.targetInstanceId }}"
+
+# SSM Automation ドキュメントを手動実行し、結果を GitHub Actions 上で確認する。
+# common-ssm-test.yml (Command ドキュメント用) の Automation 版。
+#
+# Command と違い Automation には aws ssm wait の waiter が無いため、
+# get-automation-execution をポーリングして終了を待つ。
+# aws:approve ステップを含むドキュメントは承認されるまで Running のままになるので、
+# pollTimeoutSeconds をドキュメントの timeoutSeconds 以上にすること。
+
+on:
+  workflow_dispatch:
+    inputs:
+      documentName:
+        description: "Automation Document Name (例: dev-automation-ec2HealthCheck)"
+        required: true
+        default: "dev-automation-ec2HealthCheck"
+      targetInstanceId:
+        description: "Target Instance ID (InstanceId パラメータに渡す)"
+        required: true
+      automationAssumeRole:
+        description: "AutomationAssumeRole に渡す IAM Role ARN (空の場合は実行ロールの権限で実行)"
+        required: false
+        default: ""
+      extraParameters:
+        description: '追加パラメータ (JSON object。例: {"Approvers":["arn:aws:iam::123456789012:role/xxx"],"ServiceName":"httpd"})'
+        required: false
+        default: "{}"
+      pollTimeoutSeconds:
+        description: "実行完了を待つ最大秒数"
+        required: false
+        default: "1800"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  run-ssm-automation:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'main' && 'Production_ReadOnly' || 'Development_ReadOnly' }}
+    steps:
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.ASSUME_ROLE_ARN_OPERATION }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run SSM Automation
+        env:
+          DOCUMENT_NAME: ${{ github.event.inputs.documentName }}
+          TARGET_INSTANCE_ID: ${{ github.event.inputs.targetInstanceId }}
+          AUTOMATION_ASSUME_ROLE: ${{ github.event.inputs.automationAssumeRole }}
+          EXTRA_PARAMETERS: ${{ github.event.inputs.extraParameters }}
+          POLL_TIMEOUT_SECONDS: ${{ github.event.inputs.pollTimeoutSeconds }}
+          POLL_INTERVAL_SECONDS: "15"
+        run: |
+          set -euo pipefail
+
+          # AWS CLI を実行し、出力を保持しつつ失敗時はその場で終了する
+          run_aws_capture() {
+            local __resultvar="$1"
+            shift
+
+            local output
+            local exit_code
+
+            set +e
+            output="$("$@" 2>&1)"
+            exit_code=$?
+            set -e
+
+            if [ "$exit_code" -ne 0 ]; then
+              printf '%s\n' "$output" >&2
+              echo "AWS command failed (${exit_code}): $*" >&2
+              exit "$exit_code"
+            fi
+
+            printf -v "$__resultvar" '%s' "$output"
+          }
+
+          # Workflow のログ上で実行条件を追えるよう、最初に入力値を出力する
+          echo "AWS CLI version:"
+          aws --version
+          echo "Document name: ${DOCUMENT_NAME}"
+          echo "Target instance: ${TARGET_INSTANCE_ID}"
+          echo "Automation assume role: ${AUTOMATION_ASSUME_ROLE:-<empty>}"
+          echo "Raw extra parameters: ${EXTRA_PARAMETERS:-<empty>}"
+          echo "Poll timeout: ${POLL_TIMEOUT_SECONDS}s (interval ${POLL_INTERVAL_SECONDS}s)"
+
+          if ! [[ "${POLL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || [ "${POLL_TIMEOUT_SECONDS}" -le 0 ]; then
+            echo "pollTimeoutSeconds must be a positive integer." >&2
+            exit 1
+          fi
+
+          # extraParameters は JSON object であることを検証する
+          if ! printf '%s' "${EXTRA_PARAMETERS:-{\}}" | jq -e 'type == "object"' > /dev/null 2>&1; then
+            echo "extraParameters must be a JSON object." >&2
+            exit 1
+          fi
+
+          # start-automation-execution の --parameters は {Name: [値, ...]} 形式。
+          # InstanceId / AutomationAssumeRole を固定で渡し、extraParameters を後からマージする
+          # (同名キーは extraParameters 側が優先)。文字列は単要素配列に包み、配列はそのまま渡す。
+          parameters="$(
+            jq -nc \
+              --arg instance_id "${TARGET_INSTANCE_ID}" \
+              --arg assume_role "${AUTOMATION_ASSUME_ROLE}" \
+              --argjson extra "${EXTRA_PARAMETERS:-{\}}" \
+              '
+                ({InstanceId: [$instance_id]}
+                  + (if $assume_role == "" then {} else {AutomationAssumeRole: [$assume_role]} end))
+                + ($extra | with_entries(
+                    .value |= (if type == "array" then map(tostring) else [tostring] end)
+                  ))
+              '
+          )"
+
+          echo "Resolved parameters: ${parameters}"
+
+          # 実行前に認証先、ドキュメントの存在、対象インスタンスの到達性を確認する
+          echo "Caller identity:"
+          run_aws_capture caller_identity aws sts get-caller-identity
+          printf '%s\n' "${caller_identity}"
+          echo "Document check:"
+          run_aws_capture document_summary aws ssm describe-document --name "${DOCUMENT_NAME}" --query 'Document.{Name:Name,DocumentType:DocumentType,Status:Status,DocumentVersion:DocumentVersion}' --output json
+          printf '%s\n' "${document_summary}"
+
+          document_type="$(printf '%s' "${document_summary}" | jq -r '.DocumentType')"
+          if [ "${document_type}" != "Automation" ]; then
+            echo "Document ${DOCUMENT_NAME} is ${document_type}, not Automation. Use common-ssm-test for Command documents." >&2
+            exit 1
+          fi
+
+          echo "Managed instance check:"
+          run_aws_capture instance_info aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${TARGET_INSTANCE_ID}" --output json
+          printf '%s\n' "${instance_info}"
+
+          # クォート崩れを避けるため、引数は配列で組み立てる
+          start_args=(
+            aws ssm start-automation-execution
+            --document-name "${DOCUMENT_NAME}"
+            --parameters "${parameters}"
+            --query AutomationExecutionId
+            --output text
+          )
+
+          run_aws_capture execution_id "${start_args[@]}"
+
+          echo "execution_id=${execution_id}" >> "${GITHUB_OUTPUT}"
+          echo "Started automation execution: ${execution_id}"
+          echo "Console: https://${AWS_REGION}.console.aws.amazon.com/systems-manager/automation/execution/${execution_id}?region=${AWS_REGION}"
+
+          # Automation には waiter が無いため、終了ステータスになるまでポーリングする
+          deadline=$(( $(date +%s) + POLL_TIMEOUT_SECONDS ))
+          status="Pending"
+          while :; do
+            run_aws_capture status aws ssm get-automation-execution \
+              --automation-execution-id "${execution_id}" \
+              --query 'AutomationExecution.AutomationExecutionStatus' \
+              --output text
+
+            case "${status}" in
+              Success|Failed|Cancelled|TimedOut|CompletedWithSuccess|CompletedWithFailure)
+                break
+                ;;
+            esac
+
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "::warning::Timed out after ${POLL_TIMEOUT_SECONDS}s waiting for automation execution ${execution_id} (last status: ${status})"
+              break
+            fi
+
+            echo "$(date -u +%FT%TZ) status=${status}"
+            sleep "${POLL_INTERVAL_SECONDS}"
+          done
+
+          echo "Final status: ${status}"
+
+          # 最終結果とステップごとの結果を取得する
+          run_aws_capture execution_json aws ssm get-automation-execution \
+            --automation-execution-id "${execution_id}" \
+            --output json
+
+          failure_message="$(printf '%s' "${execution_json}" | jq -r '.AutomationExecution.FailureMessage // ""')"
+          step_summary="$(
+            printf '%s' "${execution_json}" | jq -r '
+              .AutomationExecution.StepExecutions[]
+              | "| \(.StepName) | \(.Action) | \(.StepStatus) | \(.FailureMessage // "" | gsub("\n"; " ") | gsub("\\|"; "\\|")) |"
+            '
+          )"
+          step_outputs="$(
+            printf '%s' "${execution_json}" | jq -r '
+              .AutomationExecution.StepExecutions[]
+              | select(.Outputs != null and (.Outputs | length) > 0)
+              | "#### \(.StepName)\n```\n\(.Outputs | to_entries | map("\(.key):\n\(.value | join("\n"))") | join("\n\n"))\n```\n"
+            '
+          )"
+
+          {
+            echo "## SSM Automation Result"
+            echo ""
+            echo "- Document: \`${DOCUMENT_NAME}\`"
+            echo "- Instance: \`${TARGET_INSTANCE_ID}\`"
+            echo "- Execution ID: \`${execution_id}\`"
+            echo "- Status: \`${status}\`"
+            if [ -n "${failure_message}" ]; then
+              echo "- Failure Message: ${failure_message}"
+            fi
+            echo ""
+            echo "### Steps"
+            echo ""
+            echo "| Step | Action | Status | Failure Message |"
+            echo "| --- | --- | --- | --- |"
+            printf '%s\n' "${step_summary}"
+            echo ""
+            echo "### Step Outputs"
+            echo ""
+            if [ -n "${step_outputs}" ]; then
+              printf '%s\n' "${step_outputs}"
+            else
+              echo "(no outputs)"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # Success 以外 (タイムアウトで打ち切った場合も含む) は workflow を失敗扱いにする
+          if [ "${status}" != "Success" ]; then
+            echo "SSM automation execution status was ${status}" >&2
+            exit 1
+          fi
