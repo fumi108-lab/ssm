@@ -15,7 +15,8 @@
 │   ├── dev-ssm-automation-deploy.yml
 │   ├── prd-ssm-automation-deploy.yml
 │   ├── common-ssm-batch-test.yml
-│   └── common-ssm-test.yml
+│   ├── common-ssm-test.yml
+│   └── common-ssm-automation-test.yml
 ├── automation_documents/healthcheck/
 │   └── automation-*.yaml
 └── command_documents/healthcheck/
@@ -262,6 +263,27 @@ command 系との違いは以下だけです。
 認証には各 environment の `vars.ASSUME_ROLE_ARN_OPERATION` を利用します
 （デプロイ系が使う `ASSUME_ROLE_ARN_CICD` とは別のロールです）。
 
+### `common-ssm-automation-test`
+
+`common-ssm-test` の Automation 版です。指定した SSM Automation ドキュメントを
+`start-automation-execution` で実行し、ステップごとのステータスと出力を Step Summary に表示します。
+
+| 入力 | 説明 |
+| --- | --- |
+| `documentName` | Automation ドキュメント名（例: `dev-automation-ec2HealthCheck`） |
+| `targetInstanceId` | `InstanceId` パラメータに渡すインスタンス ID |
+| `automationAssumeRole` | `AutomationAssumeRole` パラメータに渡す IAM Role ARN（空なら渡さない） |
+| `extraParameters` | 追加パラメータの JSON object（例: `{"Approvers":["arn:..."],"ServiceName":"httpd"}`）。配列はそのまま、文字列は単要素配列として渡します |
+| `pollTimeoutSeconds` | 完了を待つ最大秒数（既定 1800）。`aws:approve` を含むドキュメントはその `timeoutSeconds` 以上にしてください |
+
+Automation には `aws ssm wait` の waiter が無いため、`get-automation-execution` を 15 秒間隔でポーリングします。
+最終ステータスが `Success` 以外（タイムアウトで打ち切った場合を含む）は workflow を失敗扱いにします。
+
+environment の切り替えと認証ロール（`vars.ASSUME_ROLE_ARN_OPERATION`）は `common-ssm-test` と同じです。
+ロールには `ssm:DescribeDocument` / `ssm:StartAutomationExecution`（`document/<環境名>-automation-*` と
+`automation-definition/<環境名>-automation-*`）、`ssm:GetAutomationExecution` が必要です。
+`automationAssumeRole` を使う場合はそのロールへの `iam:PassRole` も必要です。
+
 ## GitHub Configuration
 
 ### Environments
@@ -285,7 +307,7 @@ environment ごとに以下を設定します。いずれも OIDC で AssumeRole
 | 変数 | 参照するワークフロー |
 | --- | --- |
 | `ASSUME_ROLE_ARN_CICD` | `dev-ssm-cmd-deploy` / `prd-ssm-cmd-deploy` / automation 系 |
-| `ASSUME_ROLE_ARN_OPERATION` | `common-ssm-test` / `common-ssm-batch-test` |
+| `ASSUME_ROLE_ARN_OPERATION` | `common-ssm-test` / `common-ssm-batch-test` / `common-ssm-automation-test` |
 
 ### AWS Side Requirements
 
