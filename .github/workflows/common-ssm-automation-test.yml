@@ -202,6 +202,17 @@ jobs:
             '
           )"
 
+          # onFailure: Continue のステップが失敗しても Automation 全体は Success で終わるため、
+          # 全体ステータスとは別にステップ単位の結果も確認する。
+          # Skipped は分岐で通らなかっただけなので失敗として扱わない。
+          failed_steps="$(
+            printf '%s' "${execution_json}" | jq -r '
+              .AutomationExecution.StepExecutions[]
+              | select(.StepStatus != "Success" and .StepStatus != "Skipped")
+              | .StepName
+            '
+          )"
+
           {
             echo "## SSM Automation Result"
             echo ""
@@ -211,6 +222,9 @@ jobs:
             echo "- Status: \`${status}\`"
             if [ -n "${failure_message}" ]; then
               echo "- Failure Message: ${failure_message}"
+            fi
+            if [ -n "${failed_steps}" ]; then
+              echo "- Failed Steps: $(printf '%s' "${failed_steps}" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
             fi
             echo ""
             echo "### Steps"
@@ -228,8 +242,18 @@ jobs:
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          # Success 以外 (タイムアウトで打ち切った場合も含む) は workflow を失敗扱いにする
+          # 全体ステータスが Success 以外 (タイムアウトで打ち切った場合も含む) なら失敗扱いにする
           if [ "${status}" != "Success" ]; then
             echo "SSM automation execution status was ${status}" >&2
+            exit 1
+          fi
+
+          # 全体が Success でも、Failed のステップが 1 つでもあれば失敗扱いにする
+          if [ -n "${failed_steps}" ]; then
+            while IFS= read -r step_name; do
+              [ -n "${step_name}" ] || continue
+              echo "::error::Automation step failed: ${step_name}"
+            done <<< "${failed_steps}"
+            echo "SSM automation execution reported ${status} but some steps did not succeed" >&2
             exit 1
           fi
