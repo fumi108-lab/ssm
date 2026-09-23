@@ -277,12 +277,17 @@ command 系との違いは以下だけです。
 | `pollTimeoutSeconds` | 完了を待つ最大秒数（既定 1800）。`aws:approve` を含むドキュメントはその `timeoutSeconds` 以上にしてください |
 
 Automation には `aws ssm wait` の waiter が無いため、`get-automation-execution` を 15 秒間隔でポーリングします。
-最終ステータスが `Success` 以外（タイムアウトで打ち切った場合を含む）は workflow を失敗扱いにします。
+
+以下のいずれかに当てはまる場合、workflow を失敗扱いにします。
+
+- 最終ステータスが `Success` 以外（`pollTimeoutSeconds` で打ち切った場合を含む）
+- `Success` でも `Skipped` でもないステップが 1 つでもある
+
+後者が必要なのは、`onFailure: Continue` のステップが失敗しても Automation 全体は `Success` で
+終わるためです。全体ステータスだけを見ていると、ステップが全滅していても workflow が緑になります。
 
 environment の切り替えと認証ロール（`vars.ASSUME_ROLE_ARN_OPERATION`）は `common-ssm-test` と同じです。
-ロールには `ssm:DescribeDocument` / `ssm:StartAutomationExecution`（`document/<環境名>-automation-*` と
-`automation-definition/<環境名>-automation-*`）、`ssm:GetAutomationExecution` が必要です。
-`automationAssumeRole` を使う場合はそのロールへの `iam:PassRole` も必要です。
+必要な権限は下の [Operation Role Permissions](#operation-role-permissions) を参照してください。
 
 ## GitHub Configuration
 
@@ -308,6 +313,42 @@ environment ごとに以下を設定します。いずれも OIDC で AssumeRole
 | --- | --- |
 | `ASSUME_ROLE_ARN_CICD` | `dev-ssm-cmd-deploy` / `prd-ssm-cmd-deploy` / automation 系 |
 | `ASSUME_ROLE_ARN_OPERATION` | `common-ssm-test` / `common-ssm-batch-test` / `common-ssm-automation-test` |
+
+### Operation Role Permissions
+
+`vars.ASSUME_ROLE_ARN_OPERATION` のロールに必要な権限です。dev 環境で実際に実行して確定した内容で、
+ポリシー本体は `iam/policy/development-ssmExec.json` にあります（`iam/*` は `.gitignore` 対象のため
+リポジトリには含まれません）。
+
+workflow 自体が使うものと、実行する Automation ドキュメントの中身に依存するものを Sid で分けています。
+ドキュメント依存のものには `DocStep` を接頭辞として付けています。
+
+| Sid | Action | 用途 |
+| --- | --- | --- |
+| `DescribeSsmDocuments` | `ssm:DescribeDocument` | 実行前のドキュメント存在確認 |
+| `DescribeManagedInstances` | `ssm:DescribeInstanceInformation` | 実行前のインスタンス到達性確認 |
+| `SendSsmCommands` | `ssm:SendCommand` | `common-ssm-test` のコマンド送信 |
+| `ReadCommandResult` | `ssm:GetCommandInvocation` | 同上の結果取得 |
+| `StartSsmAutomation` | `ssm:StartAutomationExecution` | `common-ssm-automation-test` の起動 |
+| `ReadAutomationResult` | `ssm:GetAutomationExecution` | 同上の完了ポーリングと結果取得 |
+| `DocStepSendRunShellScript` | `ssm:SendCommand` | ドキュメントに `aws:runCommand` ステップがある場合 |
+| `DocStepVerifyRunCommandCompletion` | `ssm:ListCommands`, `ssm:ListCommandInvocations` | 同上。コマンドの完了確認に使われる |
+| `DocStepDescribeEc2` | `ec2:DescribeInstanceStatus`, `ec2:DescribeInstances` | ドキュメントが `aws:executeAwsApi` / `aws:assertAwsResourceProperty` で EC2 API を呼ぶ場合 |
+
+ハマりやすい点を 3 つ記録しておきます。
+
+1. `ssm:StartAutomationExecution` は `document/<環境名>-automation-*` と `automation-execution/*` の
+   **両方**を Resource に含める必要があります。AccessDenied は最初に失敗した 1 つしか報告しないため、
+   片方ずつ足していくとエラーが入れ替わるだけで解決しません。
+2. `aws:runCommand` ステップの完了確認には `ssm:ListCommands` と `ssm:ListCommandInvocations` の
+   **両方**が要ります。これが無いとコマンド自体は成功するのにステップだけ Failed になります。
+3. `automationAssumeRole` を空で実行すると、各ステップが呼び出し元ロールの権限で動きます。
+   そのためドキュメントが呼ぶ API の権限（`DocStep*`）が運用ロール側に必要になります。専用ロールを
+   渡す運用にする場合は、代わりにそのロールへの `iam:PassRole` が必要です。
+
+`aws:runCommand` が呼ぶ `AWS-RunShellScript` は AWS 管理ドキュメントのため、ARN のアカウント ID 部分が
+空になります（`arn:aws:ssm:<リージョン>::document/AWS-RunShellScript`）。Windows 対象のドキュメントを
+追加する場合は `AWS-RunPowerShellScript` も同様に追加してください。
 
 ### AWS Side Requirements
 
