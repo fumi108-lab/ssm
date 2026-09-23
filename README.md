@@ -326,14 +326,17 @@ workflow 自体が使うものと、実行する Automation ドキュメント�
 | Sid | Action | 用途 |
 | --- | --- | --- |
 | `DescribeSsmDocuments` | `ssm:DescribeDocument` | 実行前のドキュメント存在確認 |
-| `DescribeManagedInstances` | `ssm:DescribeInstanceInformation` | 実行前のインスタンス到達性確認 |
-| `SendSsmCommands` | `ssm:SendCommand` | `common-ssm-test` のコマンド送信 |
-| `ReadCommandResult` | `ssm:GetCommandInvocation` | 同上の結果取得 |
+| `ReadSsmCommandsExecutionStatus` | `ssm:GetCommandInvocation`, `ssm:DescribeInstanceInformation` | 実行前のインスタンス到達性確認と、`common-ssm-test` / `common-ssm-batch-test` の結果取得 |
+| `SendSsmCommands` | `ssm:SendCommand` | `common-ssm-test` / `common-ssm-batch-test` のコマンド送信 |
 | `StartSsmAutomation` | `ssm:StartAutomationExecution` | `common-ssm-automation-test` の起動 |
 | `ReadAutomationResult` | `ssm:GetAutomationExecution` | 同上の完了ポーリングと結果取得 |
 | `DocStepSendRunShellScript` | `ssm:SendCommand` | ドキュメントに `aws:runCommand` ステップがある場合 |
 | `DocStepVerifyRunCommandCompletion` | `ssm:ListCommands`, `ssm:ListCommandInvocations` | 同上。コマンドの完了確認に使われる |
 | `DocStepDescribeEc2` | `ec2:DescribeInstanceStatus`, `ec2:DescribeInstances` | ドキュメントが `aws:executeAwsApi` / `aws:assertAwsResourceProperty` で EC2 API を呼ぶ場合 |
+
+`DocStepSendRunShellScript` の Resource にインスタンス ARN が無いのは、`SendSsmCommands` 側の
+`instance/*` で既に許可されているためです。Command 系 workflow を廃止して `SendSsmCommands` を
+外す場合は、こちらにインスタンス ARN を移してください。
 
 ハマりやすい点を 3 つ記録しておきます。
 
